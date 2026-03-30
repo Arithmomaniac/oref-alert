@@ -227,6 +227,9 @@ PRE_ALERT_CATEGORY = 14
 EVENT_WINDOW_MIN = 20
 CSV_URL = "https://raw.githubusercontent.com/dleshem/israel-alerts-data/refs/heads/main/israel-alerts.csv"
 
+# These cities always get thresholds computed, regardless of registration
+ALWAYS_ACTIVE_CITIES = ["כרמיאל", "בית שמש", "חריש"]
+
 
 def _parse_date_time(date_str: str, time_str: str) -> datetime:
     """Parse DD.MM.YYYY + HH:MM:SS to datetime."""
@@ -396,9 +399,12 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
     container = _get_container_client()
 
     active_cities = _read_json_blob(container, "api/active_cities.json", default={})
-    if not active_cities:
-        logging.info("No active cities registered — skipping threshold computation")
-        return
+
+    # Always-active cities are included even if no one has registered them
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for c in ALWAYS_ACTIVE_CITIES:
+        if c not in active_cities:
+            active_cities[c] = now_str
 
     gap_data = _read_json_blob(
         container, "api/gap_data.json",
