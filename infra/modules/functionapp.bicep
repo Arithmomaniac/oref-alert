@@ -17,13 +17,13 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing 
   name: storageAccountName
 }
 
-// Consumption plan (Y1, Linux)
+// Flex Consumption plan (FC1 — works in Israel Central, Y1 does not)
 resource functionPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: functionPlanName
   location: location
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: 'FC1'
+    tier: 'FlexConsumption'
   }
   properties: {
     reserved: true // Linux
@@ -40,8 +40,26 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: functionPlan.id
     httpsOnly: true
+    functionAppConfig: {
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 512
+      }
+      runtime: {
+        name: 'python'
+        version: '3.11'
+      }
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageAccount.properties.primaryEndpoints.blob}deploymentpackage'
+          authentication: {
+            type: 'SystemAssignedIdentity'
+          }
+        }
+      }
+    }
     siteConfig: {
-      linuxFxVersion: 'Python|3.11'
       appSettings: [
         {
           name: 'AzureWebJobsStorage__accountName'
@@ -55,27 +73,27 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
           value: appInsightsConnectionString
         }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'python'
-        }
-        {
-          name: 'WEBSITE_RUN_FROM_PACKAGE'
-          value: '1'
-        }
       ]
     }
   }
 }
 
-// RBAC: Storage Blob Data Contributor for the Function App managed identity
-var storageBlobDataContributorRole = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+// Deployment package container
+resource deployContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${storageAccountName}/default/deploymentpackage'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+// RBAC: Storage Blob Data Owner for the Function App (needed for deployment + $web writes)
+var storageBlobDataOwnerRole = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
 resource funcBlobRbac 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, functionApp.id, storageBlobDataContributorRole)
+  name: guid(storageAccount.id, functionApp.id, storageBlobDataOwnerRole)
   scope: storageAccount
   properties: {
     principalId: functionApp.identity.principalId
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRole)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataOwnerRole)
     principalType: 'ServicePrincipal'
   }
 }
