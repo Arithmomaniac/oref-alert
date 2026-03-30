@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>התראות פיקוד העורף</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  transition: background-color 0.5s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+/* --- Session warning banner --- */
+#session-banner {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0.8em 1em;
+  background: rgba(255, 152, 0, 0.9);
+  color: #fff;
+  text-align: center;
+  font-size: clamp(0.7rem, 1.8vmin, 2vw);
+  z-index: 100;
+  cursor: pointer;
+}
+
+/* --- Connection / stale warning --- */
+#conn-warning {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.5em 1.2em;
+  background: rgba(0, 0, 0, 0.7);
+  color: #ffab00;
+  border-radius: 0 0 8px 8px;
+  font-size: clamp(0.7rem, 1.6vmin, 2vw);
+  z-index: 90;
+  white-space: nowrap;
+}
+
+/* --- Center content --- */
+#center {
+  text-align: center;
+  user-select: none;
+}
+
+#status-text {
+  font-size: clamp(2rem, 8vmin, 10vw);
+  font-weight: 700;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  margin-bottom: 0.2em;
+}
+
+#clock {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+  font-weight: 300;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.25);
+}
+
+#clock-main {
+  font-size: clamp(1.5rem, 6vmin, 7vw);
+}
+
+#clock-seconds {
+  font-size: clamp(0.8rem, 3vmin, 3.5vw);
+  opacity: 0.7;
+}
+
+/* --- City label (lower-left visually) --- */
+#city-label {
+  position: fixed;
+  bottom: 2vh;
+  left: 2vw;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.3em 0.8em;
+  border-radius: 6px;
+  font-size: clamp(1rem, 2.5vmin, 3vw);
+  direction: rtl;
+  user-select: none;
+}
+
+/* --- Event log (lower-right visually) --- */
+#event-log {
+  position: fixed;
+  bottom: 2vh;
+  right: 2vw;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0.5em 0.7em;
+  border-radius: 6px;
+  font-size: clamp(0.6rem, 1.2vmin, 1.5vw);
+  direction: rtl;
+  max-width: 40vw;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+#event-log .ev {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0.15em 0;
+}
+
+#event-log .ev.dimmed { opacity: 0.5; }
+
+.dot {
+  display: inline-block;
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  margin-inline-end: 0.3em;
+  vertical-align: middle;
+}
+
+.dot-red    { background: #d50000; }
+.dot-yellow { background: #f9a825; }
+.dot-green  { background: #00c853; }
+.dot-gray   { background: #9e9e9e; }
+
+.ev-time {
+  direction: ltr;
+  unicode-bidi: isolate;
+  opacity: 0.7;
+  margin-inline-end: 0.4em;
+}
+
+.ev-source {
+  opacity: 0.5;
+  margin-inline-start: 0.4em;
+  font-size: 0.85em;
+}
+
+.ev-arrow {
+  margin-inline-start: 0.3em;
+  color: #fff;
+}
+
+/* --- No-city prompt --- */
+#no-city {
+  display: none;
+  text-align: center;
+  padding: 2em;
+}
+
+#no-city h1 {
+  font-size: clamp(1.5rem, 5vmin, 6vw);
+  margin-bottom: 0.5em;
+}
+
+#no-city p {
+  font-size: clamp(1rem, 2.5vmin, 3vw);
+  margin-bottom: 0.3em;
+  opacity: 0.85;
+}
+
+#no-city a {
+  color: #fff;
+  text-decoration: underline;
+  font-size: clamp(1rem, 2.5vmin, 3vw);
+}
+
+/* --- Session expired overlay --- */
+#expired-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: #212121;
+  color: #fff;
+  z-index: 200;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  cursor: pointer;
+}
+
+#expired-overlay h1 {
+  font-size: clamp(1.5rem, 5vmin, 6vw);
+  margin-bottom: 0.5em;
+}
+
+#expired-overlay p {
+  font-size: clamp(1rem, 2.5vmin, 3vw);
+  opacity: 0.7;
+}
+</style>
+</head>
+<body>
+
+<div id="session-banner">⚠ תוקף הפעלה יפוג מחר — לחצו בכל מקום כדי להאריך</div>
+<div id="conn-warning"></div>
+
+<div id="center">
+  <div id="status-text"></div>
+  <div id="clock"><span id="clock-main"></span><span id="clock-seconds"></span></div>
+</div>
+
+<div id="city-label"></div>
+<div id="event-log"></div>
+
+<div id="no-city">
+  <h1>יש לציין עיר בכתובת</h1>
+  <p dir="ltr" style="direction:ltr">Add <code>?city=YourCity</code> to the URL</p>
+  <p><a id="example-link" href="?city=בית שמש">?city=בית שמש</a></p>
+</div>
+
+<div id="expired-overlay">
+  <h1>הפעלה פגה — לחצו לטעינה מחדש</h1>
+  <p>Session expired — tap to reload</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ── Constants ──────────────────────────────────────────────
+  var RT_TO_HIST = { 1: 1, 3: 7, 4: 9, 5: 11, 6: 2, 7: 12, 13: 10 };
+  var HIST_ALERT_CATEGORIES = new Set([1, 2, 3, 4, 7, 8, 9, 10, 11, 12]);
+  var HIST_END_CATEGORY = 13;
+  var HIST_PRE_ALERT_CATEGORY = 14;
+  var RT_MESSAGE_CATEGORY = 10;
+  var PRE_ALERT_WORD = "\u05D1\u05D3\u05E7\u05D5\u05EA";   // בדקות
+  var END_WORD = "\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD";     // הסתיים
+
+  var ALERT = "alert";
+  var PRE_ALERT = "pre_alert";
+  var END = "end";
+
+  var ALERT_EXPIRY_MIN = 180;
+  var PRE_ALERT_EXPIRY_MIN = 20;
+  var DEDUP_WINDOW_SEC = 180;
+
+  var POLL_INTERVAL = 5000;
+  var MAX_EVENTS = 10;
+  var SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+  var SESSION_WARN_MS = 6 * 24 * 60 * 60 * 1000;
+  var STALE_THRESHOLD_SEC = 60;
+  var LS_KEY = "oref_lastActivity";
+
+  // ── DOM refs ───────────────────────────────────────────────
+  var elBody = document.body;
+  var elCenter = document.getElementById("center");
+  var elStatus = document.getElementById("status-text");
+  var elClockMain = document.getElementById("clock-main");
+  var elClockSec = document.getElementById("clock-seconds");
+  var elCityLabel = document.getElementById("city-label");
+  var elEventLog = document.getElementById("event-log");
+  var elNoCity = document.getElementById("no-city");
+  var elConnWarn = document.getElementById("conn-warning");
+  var elBanner = document.getElementById("session-banner");
+  var elExpired = document.getElementById("expired-overlay");
+
+  // ── State ──────────────────────────────────────────────────
+  var city = "";
+  var currentRecord = null;
+  var eventLog = [];
+  var failCount = 0;
+  var lastRtKeys = new Set();
+  var pollTimer = null;
+  var sessionExpired = false;
+
+  // ── Parse city from query string ───────────────────────────
+  function getCity() {
+    var params = new URLSearchParams(window.location.search);
+    return (params.get("city") || "").trim();
+  }
+
+  // ── Classification logic ───────────────────────────────────
+
+  function classifyRealtime(cat, title) {
+    if (cat === RT_MESSAGE_CATEGORY) {
+      if (title.indexOf(PRE_ALERT_WORD) !== -1) {
+        return { type: PRE_ALERT, histCat: HIST_PRE_ALERT_CATEGORY };
+      }
+      if (title.indexOf(END_WORD) !== -1) {
+        return { type: END, histCat: HIST_END_CATEGORY };
+      }
+      return { type: ALERT, histCat: RT_TO_HIST[cat] || cat };
+    }
+    var histCat = RT_TO_HIST[cat];
+    if (histCat === undefined) return { type: null, histCat: null };
+    if (HIST_ALERT_CATEGORIES.has(histCat)) {
+      return { type: ALERT, histCat: histCat };
+    }
+    return { type: null, histCat: null };
+  }
+
+  function classifyHistory(cat) {
+    if (cat === HIST_END_CATEGORY) return END;
+    if (cat === HIST_PRE_ALERT_CATEGORY) return PRE_ALERT;
+    if (HIST_ALERT_CATEGORIES.has(cat)) return ALERT;
+    return null;
+  }
+
+  function makeRecord(type, category, title, timeSec) {
+    var expiryMs = null;
+    if (type === ALERT) {
+      expiryMs = timeSec * 1000 + ALERT_EXPIRY_MIN * 60 * 1000;
+    } else if (type === PRE_ALERT) {
+      expiryMs = timeSec * 1000 + PRE_ALERT_EXPIRY_MIN * 60 * 1000;
+    }
+    return { type: type, category: category, title: title, time: timeSec, expiryMs: expiryMs };
+  }
+
+  function shouldUpdate(newRec, curRec) {
+    if (curRec === null) return true;
+    if (newRec.type === PRE_ALERT && curRec.type === ALERT) return false;
+    if (newRec.type === END) return newRec.time > curRec.time;
+    if (newRec.time <= curRec.time) return false;
+    if (newRec.category === curRec.category && (newRec.time - curRec.time) <= DEDUP_WINDOW_SEC) {
+      return false;
+    }
+    return true;
+  }
+
+  function removeExpired() {
+    if (currentRecord && currentRecord.expiryMs !== null && Date.now() > currentRecord.expiryMs) {
+      var endRec = makeRecord(END, HIST_END_CATEGORY, "פג תוקף", Math.floor(Date.now() / 1000));
+      currentRecord = endRec;
+      addEvent("green", "פג תוקף התראה", "SYS", true);
+    }
+  }
+
+  function getColor(rec) {
+    if (!rec) return "green";
+    if (rec.type === ALERT) return "red";
+    if (rec.type === PRE_ALERT) return "yellow";
+    return "green";
+  }
+
+  // ── Event log ──────────────────────────────────────────────
+
+  function addEvent(dotColor, title, source, causedChange) {
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, "0");
+    var mm = String(now.getMinutes()).padStart(2, "0");
+    eventLog.unshift({
+      dotColor: dotColor,
+      time: hh + ":" + mm,
+      title: title,
+      source: source,
+      causedChange: !!causedChange
+    });
+    if (eventLog.length > MAX_EVENTS) eventLog.length = MAX_EVENTS;
+    renderEventLog();
+  }
+
+  function renderEventLog() {
+    var html = "";
+    for (var i = 0; i < eventLog.length; i++) {
+      var ev = eventLog[i];
+      var cls = ev.causedChange ? "ev" : "ev dimmed";
+      html += '<div class="' + cls + '">' +
+        '<span class="dot dot-' + ev.dotColor + '"></span>' +
+        '<span class="ev-time">' + ev.time + '</span>' +
+        escapeHtml(ev.title) +
+        '<span class="ev-source">[' + ev.source + ']</span>' +
+        (ev.causedChange ? '<span class="ev-arrow"> \u25C0</span>' : '') +
+        '</div>';
+    }
+    elEventLog.innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    var d = document.createElement("div");
+    d.appendChild(document.createTextNode(s));
+    return d.innerHTML;
+  }
+
+  // ── UI rendering ───────────────────────────────────────────
+
+  var COLOR_MAP = {
+    green:  { bg: "#00c853", label: "\u05D4\u05DB\u05DC \u05EA\u05E7\u05D9\u05DF" },        // הכל תקין
+    yellow: { bg: "#f9a825", label: "\u05D4\u05EA\u05E8\u05D0\u05D4 \u05DE\u05D5\u05E7\u05D3\u05DE\u05EA" }, // התראה מוקדמת
+    red:    { bg: "#d50000", label: "!\u05D0\u05D6\u05E2\u05E7\u05D4" }                      // !אזעקה
+  };
+
+  var currentColor = "green";
+
+  function applyColor(color) {
+    if (color === currentColor) return;
+    currentColor = color;
+    var info = COLOR_MAP[color];
+    elBody.style.backgroundColor = info.bg;
+    elStatus.textContent = info.label;
+  }
+
+  function updateClock() {
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, "0");
+    var mm = String(now.getMinutes()).padStart(2, "0");
+    var ss = String(now.getSeconds()).padStart(2, "0");
+    elClockMain.textContent = hh + ":" + mm;
+    elClockSec.textContent = ":" + ss;
+  }
+
+  // ── Polling & processing ───────────────────────────────────
+
+  function processState(state) {
+    failCount = 0;
+
+    // Check staleness
+    if (state.updated_at) {
+      var updatedMs = new Date(state.updated_at).getTime();
+      var ageSec = (Date.now() - updatedMs) / 1000;
+      if (ageSec > STALE_THRESHOLD_SEC) {
+        showWarning("\u26A0 \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD \u05DC\u05D0 \u05E2\u05D3\u05DB\u05E0\u05D9\u05D9\u05DD"); // ⚠ נתונים לא עדכניים
+      } else {
+        hideWarning();
+      }
+    }
+
+    var prevColor = getColor(currentRecord);
+
+    // Process real-time alerts
+    var newRtKeys = new Set();
+    if (Array.isArray(state.alerts)) {
+      for (var i = 0; i < state.alerts.length; i++) {
+        var a = state.alerts[i];
+        var cat = parseInt(a.cat, 10);
+        var title = a.title || "";
+        var data = a.data || [];
+        var rtKey = cat + "|" + title + "|" + data.join(",");
+        newRtKeys.add(rtKey);
+
+        if (lastRtKeys.has(rtKey)) continue; // dedup across polls
+
+        var cityMatch = false;
+        for (var j = 0; j < data.length; j++) {
+          if (data[j] === city) { cityMatch = true; break; }
+        }
+        if (!cityMatch) continue;
+
+        var cl = classifyRealtime(cat, title);
+        if (cl.type === null) continue;
+
+        var timeSec = Math.floor(Date.now() / 1000);
+        var rec = makeRecord(cl.type, cl.histCat, title, timeSec);
+        var changed = shouldUpdate(rec, currentRecord);
+        if (changed) {
+          currentRecord = rec;
+        }
+        addEvent(getColor(rec) === "green" ? "green" : getColor(rec) === "red" ? "red" : "yellow",
+          title, "RT", changed);
+      }
+    }
+    lastRtKeys = newRtKeys;
+
+    // Process history
+    if (Array.isArray(state.history)) {
+      for (var h = 0; h < state.history.length; h++) {
+        var hist = state.history[h];
+        var hData = hist.data || "";
+        if (hData !== city) continue;
+
+        var hCat = parseInt(hist.category || hist.cat, 10);
+        var hType = classifyHistory(hCat);
+        if (hType === null) continue;
+
+        var hTime = 0;
+        if (hist.alertDate) {
+          hTime = Math.floor(new Date(hist.alertDate).getTime() / 1000);
+        }
+        var hTitle = hist.title || "";
+        var hRec = makeRecord(hType, hCat, hTitle, hTime);
+        var hChanged = shouldUpdate(hRec, currentRecord);
+        if (hChanged) {
+          currentRecord = hRec;
+        }
+        var hDotColor = getColor(hRec) === "red" ? "red" : getColor(hRec) === "yellow" ? "yellow" : "green";
+        addEvent(hDotColor, hTitle || ("\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4 " + hCat), "HIST", hChanged);
+      }
+    }
+
+    // Check expiry
+    removeExpired();
+
+    var newColor = getColor(currentRecord);
+    applyColor(newColor);
+  }
+
+  function poll() {
+    if (sessionExpired) return;
+
+    fetch("/api/state.json")
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        processState(data);
+      })
+      .catch(function () {
+        failCount++;
+        if (failCount >= 3) {
+          showWarning("\u26A0 \u05D0\u05D9\u05DF \u05D7\u05D9\u05D1\u05D5\u05E8"); // ⚠ אין חיבור
+        }
+      });
+  }
+
+  function showWarning(msg) {
+    elConnWarn.textContent = msg;
+    elConnWarn.style.display = "block";
+  }
+
+  function hideWarning() {
+    elConnWarn.style.display = "none";
+  }
+
+  // ── Session timeout ────────────────────────────────────────
+
+  function resetActivity() {
+    try { localStorage.setItem(LS_KEY, String(Date.now())); } catch (e) {}
+  }
+
+  function getLastActivity() {
+    try {
+      var v = localStorage.getItem(LS_KEY);
+      return v ? parseInt(v, 10) : Date.now();
+    } catch (e) { return Date.now(); }
+  }
+
+  function checkSession() {
+    if (sessionExpired) return;
+    var elapsed = Date.now() - getLastActivity();
+
+    if (elapsed >= SESSION_MAX_MS) {
+      sessionExpired = true;
+      if (pollTimer) clearInterval(pollTimer);
+      elExpired.style.display = "flex";
+      elExpired.addEventListener("click", function () { location.reload(); });
+      return;
+    }
+
+    if (elapsed >= SESSION_WARN_MS) {
+      elBanner.style.display = "block";
+    } else {
+      elBanner.style.display = "none";
+    }
+  }
+
+  // ── Init ───────────────────────────────────────────────────
+
+  function init() {
+    city = getCity();
+
+    if (!city) {
+      elBody.style.backgroundColor = "#424242";
+      elCenter.style.display = "none";
+      elCityLabel.style.display = "none";
+      elEventLog.style.display = "none";
+      elNoCity.style.display = "block";
+      return;
+    }
+
+    // Show city label
+    elCityLabel.textContent = city;
+
+    // Initial color
+    applyColor("green");
+
+    // Clock
+    updateClock();
+    setInterval(updateClock, 1000);
+
+    // Session management
+    resetActivity();
+    ["click", "touchstart", "keypress"].forEach(function (evt) {
+      document.addEventListener(evt, resetActivity, { passive: true });
+    });
+    setInterval(checkSession, 60000);
+
+    // Start polling
+    poll();
+    pollTimer = setInterval(poll, POLL_INTERVAL);
+
+    addEvent("green", "\u05D4\u05DE\u05E2\u05E8\u05DB\u05EA \u05D4\u05D5\u05E4\u05E2\u05DC\u05D4", "SYS", false); // המערכת הופעלה
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

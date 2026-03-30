@@ -49,6 +49,8 @@ jobs:
   deploy-web:
     runs-on: ubuntu-latest
     environment: production
+    env:
+      AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
 
     steps:
       - name: Checkout
@@ -63,18 +65,13 @@ jobs:
 
       - name: Deploy web to blob storage
         run: |
-          az storage blob upload-batch \
-            --account-name orefalertst \
-            --destination '$web' \
-            --source web/ \
-            --overwrite \
-            --content-type "text/html" \
-            --pattern "*.html" \
-            --auth-mode login
+          STORAGE_ACCOUNT="${AZURE_FUNCTIONAPP_NAME/-func/}st"
+          STORAGE_ACCOUNT="${STORAGE_ACCOUNT//-/}"
 
           az storage blob upload-batch \
-            --account-name orefalertst \
+            --account-name "$STORAGE_ACCOUNT" \
             --destination '$web' \
             --source web/ \
             --overwrite \
+            --content-type "text/html; charset=utf-8" \
             --auth-mode login
