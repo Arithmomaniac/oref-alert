@@ -744,7 +744,7 @@ body {
 
   function rebuildRecentHistory(state) {
     if (!Array.isArray(state.history)) return;
-    var thirtyMinAgo = Date.now() - 30 * 60 * 1000;
+    var historyWindowAgo = Date.now() - 3 * 60 * 60 * 1000;
     var relevant = [];
     for (var h = 0; h < state.history.length; h++) {
       var hist = state.history[h];
@@ -756,7 +756,7 @@ body {
       if (hist.alertDate) {
         hTime = new Date(hist.alertDate).getTime();
       }
-      if (hTime < thirtyMinAgo) continue;
+      if (hTime < historyWindowAgo) continue;
       relevant.push({ type: hType, cat: hCat, title: hist.title || "", timeMs: hTime });
     }
     // Sort oldest first so unshift produces correct order
