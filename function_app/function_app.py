@@ -304,9 +304,10 @@ def _find_sirens_in_window(all_rows, start_dt, end_dt):
 def _compute_gap(target_city, cohort_cities, sirens):
     """Compute gap analysis for a single pre-alert event.
 
-    Returns (gap_seconds, outcome).
+    Returns (gap_seconds, outcome, cohort_sirens_count).
       gap_seconds: 0 (immediate), positive (max gap), or None (miss)
       outcome: "immediate", "hit_after_gap", "miss"
+      cohort_sirens_count: how many cohort cities got sirens
     """
     seen_cohort = set()
     new_cohort_times = []
@@ -321,15 +322,15 @@ def _compute_gap(target_city, cohort_cities, sirens):
                 new_cohort_times.append(dt)
 
     if city_siren_time is None:
-        return None, "miss"
+        return None, "miss", len(seen_cohort)
 
     cohort_times_before = [t for t in new_cohort_times if t < city_siren_time]
     if not cohort_times_before:
-        return 0, "immediate"
+        return 0, "immediate", len(seen_cohort)
 
     timestamps = cohort_times_before + [city_siren_time]
     gaps = [(timestamps[i] - timestamps[i - 1]).total_seconds() for i in range(1, len(timestamps))]
-    return max(gaps), "hit_after_gap"
+    return max(gaps), "hit_after_gap", len(seen_cohort)
 
 
 def _analyze_city(target_city, all_rows, pre_alerts_by_date, watermark_dt):
@@ -360,12 +361,14 @@ def _analyze_city(target_city, all_rows, pre_alerts_by_date, watermark_dt):
         }
         window_end = _find_end_time(all_rows, target_city, pre_alert_dt)
         sirens = _find_sirens_in_window(all_rows, pre_alert_dt, window_end)
-        gap, outcome = _compute_gap(target_city, cohort_cities, sirens)
+        gap, outcome, cohort_sirens = _compute_gap(target_city, cohort_cities, sirens)
 
         events.append({
             "outcome": outcome,
             "gap": gap,
             "alert_date": alert_date_str,
+            "cohort_size": len(cohort_cities),
+            "cohort_sirens": cohort_sirens,
         })
     return events
 
@@ -374,18 +377,23 @@ def _compute_threshold(events, target_fn_rate=0.05):
     """Find the lowest threshold (30s increments, 30-600s) where FN rate ≤ target.
 
     FN = outcome is hit_after_gap with gap > threshold.
-    FN rate = FN / (misses + FN).
+    FN rate = FN / (misses_with_sirens + FN).
+    Only misses where cohort had sirens count (otherwise missed-us wouldn't trigger).
     """
     if not events:
         return 300, 0, 0.0
+
+    miss_with_sirens = sum(
+        1 for e in events
+        if e["outcome"] == "miss" and e.get("cohort_sirens", 0) > 0
+    )
 
     for threshold in range(30, 601, 30):
         fn = sum(
             1 for e in events
             if e["outcome"] == "hit_after_gap" and e["gap"] is not None and e["gap"] > threshold
         )
-        misses = sum(1 for e in events if e["outcome"] == "miss")
-        denom = misses + fn
+        denom = miss_with_sirens + fn
         fn_rate = fn / denom if denom > 0 else 0.0
         if fn_rate <= target_fn_rate:
             return threshold, len(events), fn_rate
