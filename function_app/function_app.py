@@ -417,7 +417,9 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
     csv_text = resp.text
 
     now = datetime.now(timezone.utc)
-    cutoff_dt = now - timedelta(hours=6)
+    # CSV uses Israel local time (naive); strip tz for comparison.
+    # 6-hour lag is generous enough to absorb the UTC+2/3 difference.
+    cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
 
     all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
     logging.info("Parsed %d rows (2026+, before 6h lag)", len(all_rows))

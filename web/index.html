@@ -351,6 +351,9 @@ body {
     return true;
   }
 
+  // Function app URL for API calls that need server-side processing
+  var FUNC_API = "https://orefalert-func.azurewebsites.net/api";
+
   function fetchThresholds() {
     fetch("/api/thresholds.json")
       .then(function(r) { return r.ok ? r.json() : null; })
@@ -371,7 +374,7 @@ body {
   }
 
   function registerCity() {
-    fetch("/api/register?city=" + encodeURIComponent(city)).catch(function() {});
+    fetch(FUNC_API + "/register?city=" + encodeURIComponent(city)).catch(function() {});
   }
 
   // ── Classification logic ───────────────────────────────────
