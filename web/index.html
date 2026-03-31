@@ -323,7 +323,7 @@ body {
   var cohortCities = new Set();
   var sirenCohortCities = new Set();
   var sirenCohortStableSince = null;
-  var stableThresholdMs = 300 * 1000;
+  var stableThresholdMs = null;      // null = no data, disable missed-us
   var thresholdsData = null;
   var lastThresholdFetch = 0;
   var firstPoll = true; // on first poll, replay history to rebuild event log
@@ -366,7 +366,7 @@ body {
         } else if (data.cities && data.cities[city]) {
           stableThresholdMs = data.cities[city].stable_seconds * 1000;
         } else {
-          stableThresholdMs = (data.default_stable_seconds || 300) * 1000;
+          stableThresholdMs = null; // no data for this city — disable missed-us
         }
         lastThresholdFetch = Date.now();
       })
@@ -440,7 +440,8 @@ body {
     if (!rec) return "green";
     if (rec.type === ALERT) return "red";
     if (rec.type === PRE_ALERT) {
-      if (sirenCohortCities.size > 0 && sirenCohortStableSince !== null &&
+      if (stableThresholdMs !== null &&
+          sirenCohortCities.size > 0 && sirenCohortStableSince !== null &&
           (Date.now() - sirenCohortStableSince) >= stableThresholdMs) {
         return "yellow_orange";
       }
