@@ -408,13 +408,31 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
 
     gap_data = _read_json_blob(
         container, "api/gap_data.json",
-        default={"watermark": None, "cities": {}},
+        default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
     )
 
-    logging.info("Downloading israel-alerts.csv …")
-    resp = httpx.get(CSV_URL, timeout=60.0, verify=True)
+    # Download CSV — use Range header to skip already-processed bytes
+    byte_offset = gap_data.get("csv_byte_offset", 0)
+    headers = {}
+    if byte_offset > 0:
+        headers["Range"] = f"bytes={byte_offset}-"
+        logging.info("Downloading israel-alerts.csv from byte %d …", byte_offset)
+    else:
+        logging.info("Downloading full israel-alerts.csv …")
+
+    resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
     resp.raise_for_status()
-    csv_text = resp.text
+    raw_bytes = resp.content
+
+    if byte_offset > 0:
+        # Range response — prepend a fake header so csv.reader works
+        csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
+        new_total_bytes = byte_offset + len(raw_bytes)
+    else:
+        csv_text = raw_bytes.decode("utf-8")
+        new_total_bytes = len(raw_bytes)
+
+    logging.info("Downloaded %d bytes (total offset: %d)", len(raw_bytes), new_total_bytes)
 
     now = datetime.now(timezone.utc)
     # CSV uses Israel local time (naive); strip tz for comparison.
@@ -444,10 +462,11 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
         gap_data["cities"][city_name] = existing
         logging.info("City %s: %d new events (total %d)", city_name, len(new_events), len(existing))
 
-    # Update watermark to latest processed event minus 6h buffer
+    # Update watermark and byte offset for next incremental download
     if all_rows:
         latest_dt = max(dt for dt, *_ in all_rows)
         gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
+    gap_data["csv_byte_offset"] = new_total_bytes
 
     # Compute thresholds per city
     target_fn_rate = 0.05
