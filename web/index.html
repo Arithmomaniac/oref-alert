@@ -139,12 +139,6 @@ body {
   margin-inline-end: 0.4em;
 }
 
-.ev-source {
-  opacity: 0.5;
-  margin-inline-start: 0.4em;
-  font-size: 0.85em;
-}
-
 /* --- No-city prompt --- */
 #no-city {
   display: none;
@@ -484,7 +478,6 @@ body {
         '<span class="dot dot-' + ev.dotColor + '"></span>' +
         '<span class="ev-time">' + ev.time + '</span>' +
         escapeHtml(ev.title) +
-        '<span class="ev-source">[' + ev.source + ']</span>' +
         '</div>';
     }
     elEventLog.innerHTML = html;
