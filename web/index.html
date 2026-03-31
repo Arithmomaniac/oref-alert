@@ -486,6 +486,11 @@ body {
     return d.innerHTML;
   }
 
+  function parseAlertDate(s) {
+    // oref dates use space ("2026-03-31 16:15:08") not T — Firefox requires T
+    return new Date(s.replace(" ", "T"));
+  }
+
   // ── UI rendering ───────────────────────────────────────────
 
   var COLOR_MAP = {
@@ -649,7 +654,7 @@ body {
 
         var hTime = 0;
         if (hist.alertDate) {
-          hTime = Math.floor(new Date(hist.alertDate).getTime() / 1000);
+          hTime = Math.floor(parseAlertDate(hist.alertDate).getTime() / 1000);
         }
         var hTitle = hist.title || "";
         var hRec = makeRecord(hType, hCat, hTitle, hTime);
@@ -754,7 +759,7 @@ body {
       if (hType === null) continue;
       var hTime = 0;
       if (hist.alertDate) {
-        hTime = new Date(hist.alertDate).getTime();
+        hTime = parseAlertDate(hist.alertDate).getTime();
       }
       if (hTime < historyWindowAgo) continue;
       relevant.push({ type: hType, cat: hCat, title: hist.title || "", timeMs: hTime });
