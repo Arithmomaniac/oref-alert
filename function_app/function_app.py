@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 import azure.functions as func
 import httpx
 from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobServiceClient, ContentSettings
+from azure.storage.blob import BlobLeaseClient, BlobServiceClient, ContentSettings
 
 app = func.FunctionApp()
 
@@ -182,6 +182,36 @@ def _write_json_blob(container_client, blob_path, data, cache_control="no-cache"
     )
 
 
+LOCK_BLOB = "api/_compute.lock"
+LOCK_LEASE_SECONDS = 300  # 5 min max hold
+
+
+class _ComputeLock:
+    """Blob lease-based lock to prevent concurrent threshold computation."""
+
+    def __init__(self, container_client):
+        self._container = container_client
+        self._lease = None
+
+    def __enter__(self):
+        blob = self._container.get_blob_client(LOCK_BLOB)
+        # Ensure lock blob exists
+        try:
+            blob.upload_blob(b"lock", overwrite=False)
+        except Exception:
+            pass  # already exists
+        self._lease = BlobLeaseClient(blob)
+        self._lease.acquire(lease_duration=LOCK_LEASE_SECONDS)
+        return self
+
+    def __exit__(self, *args):
+        if self._lease:
+            try:
+                self._lease.release()
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # 1. HTTP-triggered /api/register endpoint
 # ---------------------------------------------------------------------------
@@ -239,67 +269,88 @@ def compute_city(req: func.HttpRequest) -> func.HttpResponse:
 
     logging.info("On-demand compute for city: %s", city)
 
-    gap_data = _read_json_blob(
-        container, "api/gap_data.json",
-        default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
-    )
+    try:
+        with _ComputeLock(container):
+            # Re-read inside lock to avoid TOCTOU race
+            thresholds = _read_json_blob(container, "api/thresholds.json", default={})
+            if thresholds.get("cities", {}).get(city):
+                return func.HttpResponse(
+                    json.dumps({"ok": True, "city": city, "status": "already_computed",
+                                "threshold": thresholds["cities"][city]}, ensure_ascii=False),
+                    status_code=200, mimetype="application/json",
+                    headers={"Access-Control-Allow-Origin": "*"},
+                )
 
-    # Download CSV (incremental if possible)
-    byte_offset = gap_data.get("csv_byte_offset", 0)
-    headers = {}
-    if byte_offset > 0:
-        headers["Range"] = f"bytes={byte_offset}-"
+            gap_data = _read_json_blob(
+                container, "api/gap_data.json",
+                default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
+            )
 
-    resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
-    resp.raise_for_status()
-    raw_bytes = resp.content
+            # Download CSV (incremental if possible)
+            byte_offset = gap_data.get("csv_byte_offset", 0)
+            req_headers = {}
+            if byte_offset > 0:
+                req_headers["Range"] = f"bytes={byte_offset}-"
 
-    if byte_offset > 0 and resp.status_code == 206:
-        csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
-        new_total_bytes = byte_offset + len(raw_bytes)
-    else:
-        csv_text = raw_bytes.decode("utf-8")
-        new_total_bytes = len(raw_bytes)
+            resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=req_headers)
+            resp.raise_for_status()
+            raw_bytes = resp.content
 
-    now = datetime.now(timezone.utc)
-    cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
-    all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
+            if byte_offset > 0 and resp.status_code == 206:
+                csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
+                new_total_bytes = byte_offset + len(raw_bytes)
+            else:
+                csv_text = raw_bytes.decode("utf-8")
+                new_total_bytes = len(raw_bytes)
 
-    # For a new city we need to scan all data (watermark doesn't apply)
-    new_events = _analyze_city(city, all_rows, pre_alerts_by_date, watermark_dt=None)
+            now = datetime.now(timezone.utc)
+            cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
+            all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
 
-    # Update gap_data for this city
-    gap_data["cities"][city] = new_events
-    gap_data["csv_byte_offset"] = new_total_bytes
-    if all_rows:
-        latest_dt = max(dt for dt, *_ in all_rows)
-        gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
+            # For a new city we need to scan all data (watermark doesn't apply)
+            new_events = _analyze_city(city, all_rows, pre_alerts_by_date, watermark_dt=None)
 
-    # Compute threshold
-    stable_sec, event_count, fn_rate = _compute_threshold(new_events)
-    city_threshold = {
-        "stable_seconds": stable_sec,
-        "events": event_count,
-        "fn_rate": round(fn_rate, 4),
-    }
+            # Update gap_data for this city
+            gap_data["cities"][city] = new_events
+            gap_data["csv_byte_offset"] = new_total_bytes
+            if all_rows:
+                latest_dt = max(dt for dt, *_ in all_rows)
+                gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
 
-    # Update thresholds.json
-    if "cities" not in thresholds:
-        thresholds["cities"] = {}
-    thresholds["cities"][city] = city_threshold
-    thresholds["updated"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Compute threshold
+            stable_sec, event_count, fn_rate = _compute_threshold(new_events)
+            city_threshold = {
+                "stable_seconds": stable_sec,
+                "events": event_count,
+                "fn_rate": round(fn_rate, 4),
+            }
 
-    _write_json_blob(container, "api/gap_data.json", gap_data)
-    _write_json_blob(container, "api/thresholds.json", thresholds)
-    logging.info("Computed threshold for %s: %ds (%d events, %.1f%% FN)",
-                 city, stable_sec, event_count, fn_rate * 100)
+            # Update thresholds.json
+            if "cities" not in thresholds:
+                thresholds["cities"] = {}
+            thresholds["cities"][city] = city_threshold
+            thresholds["updated"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    return func.HttpResponse(
-        json.dumps({"ok": True, "city": city, "status": "computed",
-                    "threshold": city_threshold}, ensure_ascii=False),
-        status_code=200, mimetype="application/json",
-        headers={"Access-Control-Allow-Origin": "*"},
-    )
+            _write_json_blob(container, "api/gap_data.json", gap_data)
+            _write_json_blob(container, "api/thresholds.json", thresholds)
+            logging.info("Computed threshold for %s: %ds (%d events, %.1f%% FN)",
+                         city, stable_sec, event_count, fn_rate * 100)
+
+        return func.HttpResponse(
+            json.dumps({"ok": True, "city": city, "status": "computed",
+                        "threshold": city_threshold}, ensure_ascii=False),
+            status_code=200, mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    except Exception as exc:
+        if "LeaseAlreadyPresent" in str(exc):
+            return func.HttpResponse(
+                json.dumps({"ok": True, "city": city, "status": "computing_elsewhere"},
+                           ensure_ascii=False),
+                status_code=202, mimetype="application/json",
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -500,89 +551,87 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
         if c not in active_cities:
             active_cities[c] = now_str
 
-    gap_data = _read_json_blob(
-        container, "api/gap_data.json",
-        default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
-    )
+    with _ComputeLock(container):
+        gap_data = _read_json_blob(
+            container, "api/gap_data.json",
+            default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
+        )
 
-    # Download CSV — use Range header to skip already-processed bytes
-    byte_offset = gap_data.get("csv_byte_offset", 0)
-    headers = {}
-    if byte_offset > 0:
-        headers["Range"] = f"bytes={byte_offset}-"
-        logging.info("Downloading israel-alerts.csv from byte %d …", byte_offset)
-    else:
-        logging.info("Downloading full israel-alerts.csv …")
+        # Download CSV — use Range header to skip already-processed bytes
+        byte_offset = gap_data.get("csv_byte_offset", 0)
+        headers = {}
+        if byte_offset > 0:
+            headers["Range"] = f"bytes={byte_offset}-"
+            logging.info("Downloading israel-alerts.csv from byte %d …", byte_offset)
+        else:
+            logging.info("Downloading full israel-alerts.csv …")
 
-    resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
-    resp.raise_for_status()
-    raw_bytes = resp.content
+        resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
+        resp.raise_for_status()
+        raw_bytes = resp.content
 
-    if byte_offset > 0:
-        # Range response — prepend a fake header so csv.reader works
-        csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
-        new_total_bytes = byte_offset + len(raw_bytes)
-    else:
-        csv_text = raw_bytes.decode("utf-8")
-        new_total_bytes = len(raw_bytes)
+        if byte_offset > 0:
+            csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
+            new_total_bytes = byte_offset + len(raw_bytes)
+        else:
+            csv_text = raw_bytes.decode("utf-8")
+            new_total_bytes = len(raw_bytes)
 
-    logging.info("Downloaded %d bytes (total offset: %d)", len(raw_bytes), new_total_bytes)
+        logging.info("Downloaded %d bytes (total offset: %d)", len(raw_bytes), new_total_bytes)
 
-    now = datetime.now(timezone.utc)
-    # CSV uses Israel local time (naive); strip tz for comparison.
-    # 6-hour lag is generous enough to absorb the UTC+2/3 difference.
-    cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
+        now = datetime.now(timezone.utc)
+        cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
 
-    all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
-    logging.info("Parsed %d rows (2026+, before 6h lag)", len(all_rows))
+        all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
+        logging.info("Parsed %d rows (2026+, before 6h lag)", len(all_rows))
 
-    watermark_dt = None
-    if gap_data.get("watermark"):
-        watermark_dt = datetime.fromisoformat(gap_data["watermark"])
+        watermark_dt = None
+        if gap_data.get("watermark"):
+            watermark_dt = datetime.fromisoformat(gap_data["watermark"])
 
-    city_names = list(active_cities.keys())
+        city_names = list(active_cities.keys())
 
-    def _process_city(city_name):
-        new_events = _analyze_city(city_name, all_rows, pre_alerts_by_date, watermark_dt)
-        return city_name, new_events
+        def _process_city(city_name):
+            new_events = _analyze_city(city_name, all_rows, pre_alerts_by_date, watermark_dt)
+            return city_name, new_events
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_process_city, c): c for c in city_names}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(_process_city, c): c for c in city_names}
 
-    for future in futures:
-        city_name, new_events = future.result()
-        existing = gap_data["cities"].get(city_name, [])
-        existing.extend(new_events)
-        gap_data["cities"][city_name] = existing
-        logging.info("City %s: %d new events (total %d)", city_name, len(new_events), len(existing))
+        for future in futures:
+            city_name, new_events = future.result()
+            existing = gap_data["cities"].get(city_name, [])
+            existing.extend(new_events)
+            gap_data["cities"][city_name] = existing
+            logging.info("City %s: %d new events (total %d)", city_name, len(new_events), len(existing))
 
-    # Update watermark and byte offset for next incremental download
-    if all_rows:
-        latest_dt = max(dt for dt, *_ in all_rows)
-        gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
-    gap_data["csv_byte_offset"] = new_total_bytes
+        # Update watermark and byte offset for next incremental download
+        if all_rows:
+            latest_dt = max(dt for dt, *_ in all_rows)
+            gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
+        gap_data["csv_byte_offset"] = new_total_bytes
 
-    # Compute thresholds per city
-    target_fn_rate = 0.05
-    thresholds = {
-        "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "default_stable_seconds": 300,
-        "target_fn_rate": target_fn_rate,
-        "cities": {},
-    }
-
-    for city_name in gap_data["cities"]:
-        events = gap_data["cities"][city_name]
-        stable_sec, event_count, fn_rate = _compute_threshold(events, target_fn_rate)
-        thresholds["cities"][city_name] = {
-            "stable_seconds": stable_sec,
-            "events": event_count,
-            "fn_rate": round(fn_rate, 4),
+        # Compute thresholds per city
+        target_fn_rate = 0.05
+        thresholds = {
+            "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "default_stable_seconds": 300,
+            "target_fn_rate": target_fn_rate,
+            "cities": {},
         }
 
-    _write_json_blob(container, "api/gap_data.json", gap_data)
-    _write_json_blob(container, "api/thresholds.json", thresholds)
-    logging.info("Wrote thresholds for %d cities", len(thresholds["cities"]))
+        for city_name in gap_data["cities"]:
+            events = gap_data["cities"][city_name]
+            stable_sec, event_count, fn_rate = _compute_threshold(events, target_fn_rate)
+            thresholds["cities"][city_name] = {
+                "stable_seconds": stable_sec,
+                "events": event_count,
+                "fn_rate": round(fn_rate, 4),
+            }
+
+        _write_json_blob(container, "api/gap_data.json", gap_data)
+        _write_json_blob(container, "api/thresholds.json", thresholds)
+        logging.info("Wrote thresholds for %d cities", len(thresholds["cities"]))
 
     # Refresh the cached city list from oref
     try:
