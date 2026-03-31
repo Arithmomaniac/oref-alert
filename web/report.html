@@ -27,6 +27,14 @@
               padding: 12px 16px; margin: 16px 0; border-radius: 4px; }
   .loading { text-align: center; padding: 40px; color: #999; }
   a { color: #1976d2; }
+  .city-picker { background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                  padding: 16px 24px; margin-bottom: 24px; display: flex; gap: 16px;
+                  flex-wrap: wrap; align-items: center; }
+  .city-picker label { font-weight: 600; font-size: 14px; }
+  .city-picker select { font-size: 14px; padding: 6px 10px; border-radius: 6px;
+                         border: 1px solid #ccc; min-width: 150px; direction: rtl; }
+  .color-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+                margin-right: 4px; vertical-align: middle; }
 </style>
 </head>
 <body>
@@ -43,6 +51,13 @@
 <div id="loading" class="loading">טוען נתונים...</div>
 
 <div id="content" style="display:none">
+  <div class="city-picker" id="city-picker">
+    <span style="font-weight:700">Compare cities:</span>
+    <div><span class="color-dot" style="background:#2196F3"></span><label>1: </label><select id="sel0"></select></div>
+    <div><span class="color-dot" style="background:#F44336"></span><label>2: </label><select id="sel1"></select></div>
+    <div><span class="color-dot" style="background:#4CAF50"></span><label>3: </label><select id="sel2"></select></div>
+  </div>
+
   <div class="summary" id="stat-cards"></div>
 
   <h2>Outcome Breakdown</h2>
@@ -67,87 +82,129 @@
 
 <script>
 (function() {
-  var CITY_LABELS = {
-    "\u05DB\u05E8\u05DE\u05D9\u05D0\u05DC": "Karmiel",
-    "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9": "Beit Shemesh",
-    "\u05D7\u05E8\u05D9\u05E9": "Harish"
-  };
-  var COLORS = { "Karmiel": "#2196F3", "Beit Shemesh": "#F44336", "Harish": "#4CAF50" };
+  var SLOT_COLORS = ["#2196F3", "#F44336", "#4CAF50"];
+  var DEFAULTS = ["\u05DB\u05E8\u05DE\u05D9\u05D0\u05DC", "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9", "\u05D7\u05E8\u05D9\u05E9"];
+  var gapData, thresholdsData;
+  var charts = {};
 
   Promise.all([
     fetch("/api/gap_data.json").then(function(r) { return r.json(); }),
     fetch("/api/thresholds.json").then(function(r) { return r.json(); })
   ]).then(function(results) {
-    var gapData = results[0];
-    var thresholds = results[1];
+    gapData = results[0];
+    thresholdsData = results[1];
     document.getElementById("loading").style.display = "none";
     document.getElementById("content").style.display = "block";
-    render(gapData, thresholds);
+    initPickers();
+    renderAll();
   }).catch(function(err) {
     document.getElementById("loading").textContent = "Failed to load data: " + err.message;
   });
 
-  function render(gapData, thresholds) {
-    var cityNames = Object.keys(gapData.cities);
-    var labels = cityNames.map(function(c) { return CITY_LABELS[c] || c; });
-    var colors = labels.map(function(l) { return COLORS[l] || "#999"; });
+  function initPickers() {
+    // Only show cities that have gap data
+    var available = Object.keys(gapData.cities).sort();
+    for (var s = 0; s < 3; s++) {
+      var sel = document.getElementById("sel" + s);
+      var noneOpt = document.createElement("option");
+      noneOpt.value = ""; noneOpt.textContent = "(none)";
+      sel.appendChild(noneOpt);
+      for (var i = 0; i < available.length; i++) {
+        var opt = document.createElement("option");
+        opt.value = available[i];
+        opt.textContent = available[i];
+        sel.appendChild(opt);
+      }
+      // Default selection
+      if (DEFAULTS[s] && available.indexOf(DEFAULTS[s]) !== -1) {
+        sel.value = DEFAULTS[s];
+      }
+      sel.addEventListener("change", renderAll);
+    }
+  }
 
-    // Compute stats per city
-    var stats = {};
-    cityNames.forEach(function(c, i) {
-      var events = gapData.cities[c];
-      var miss = 0, missWithSirens = 0, immediate = 0, gapIntervals = [];
-      events.forEach(function(e) {
-        if (e.outcome === "miss") {
-          miss++;
-          if (e.cohort_sirens > 0) missWithSirens++;
-        } else if (e.outcome === "immediate") {
-          immediate++;
-        } else if (e.outcome === "hit_after_gap") {
-          gapIntervals.push(e.gap);
-        }
-      });
-      gapIntervals.sort(function(a, b) { return a - b; });
+  function getSelected() {
+    var result = [];
+    for (var s = 0; s < 3; s++) {
+      var v = document.getElementById("sel" + s).value;
+      if (v && gapData.cities[v]) result.push(v);
+    }
+    return result;
+  }
 
-      // Compute FN rates across thresholds
-      var maxThresh = 600;
-      var thresholdValues = [];
-      for (var t = 0; t <= maxThresh; t += 30) thresholdValues.push(t);
-      var fnRates = thresholdValues.map(function(t) {
-        var fn = gapIntervals.filter(function(g) { return g > t; }).length;
-        var denom = missWithSirens + fn;
-        return denom > 0 ? Math.round(fn / denom * 1000) / 10 : 0;
-      });
-
-      // Histogram bins
-      var histBins = {};
-      gapIntervals.forEach(function(iv) {
-        var b = Math.floor(iv / 30) * 30;
-        histBins[b] = (histBins[b] || 0) + 1;
-      });
-
-      stats[labels[i]] = {
-        miss: miss,
-        missWithSirens: missWithSirens,
-        immediate: immediate,
-        gapCount: gapIntervals.length,
-        total: events.length,
-        gapIntervals: gapIntervals,
-        fnRates: fnRates,
-        thresholdValues: thresholdValues,
-        histBins: histBins
-      };
+  function computeStats(cityName) {
+    var events = gapData.cities[cityName];
+    var miss = 0, missWithSirens = 0, immediate = 0, gapIntervals = [];
+    events.forEach(function(e) {
+      if (e.outcome === "miss") {
+        miss++;
+        if (e.cohort_sirens > 0) missWithSirens++;
+      } else if (e.outcome === "immediate") {
+        immediate++;
+      } else if (e.outcome === "hit_after_gap") {
+        gapIntervals.push(e.gap);
+      }
     });
+    gapIntervals.sort(function(a, b) { return a - b; });
+
+    var maxThresh = 600;
+    var thresholdValues = [];
+    for (var t = 0; t <= maxThresh; t += 30) thresholdValues.push(t);
+    var fnRates = thresholdValues.map(function(t) {
+      var fn = gapIntervals.filter(function(g) { return g > t; }).length;
+      var denom = missWithSirens + fn;
+      return denom > 0 ? Math.round(fn / denom * 1000) / 10 : 0;
+    });
+
+    var histBins = {};
+    gapIntervals.forEach(function(iv) {
+      var b = Math.floor(iv / 30) * 30;
+      histBins[b] = (histBins[b] || 0) + 1;
+    });
+
+    return {
+      miss: miss, missWithSirens: missWithSirens, immediate: immediate,
+      gapCount: gapIntervals.length, total: events.length,
+      gapIntervals: gapIntervals, fnRates: fnRates,
+      thresholdValues: thresholdValues, histBins: histBins
+    };
+  }
+
+  function fmtThresh(t) {
+    if (t === 0) return "0";
+    if (t < 60) return t + "s";
+    if (t % 60 === 0) return (t / 60) + "m";
+    return Math.floor(t / 60) + "m" + (t % 60 < 10 ? "0" : "") + (t % 60) + "s";
+  }
+
+  function destroyCharts() {
+    for (var k in charts) { if (charts[k]) charts[k].destroy(); }
+    charts = {};
+  }
+
+  function renderAll() {
+    destroyCharts();
+    var selected = getSelected();
+    if (selected.length === 0) {
+      document.getElementById("stat-cards").innerHTML = '<p style="color:#999">Select at least one city above.</p>';
+      document.getElementById("insight-box").innerHTML = "";
+      document.getElementById("threshold-table").innerHTML = "";
+      return;
+    }
+
+    var stats = {};
+    selected.forEach(function(c) { stats[c] = computeStats(c); });
+    var colors = selected.map(function(_, i) { return SLOT_COLORS[i] || "#999"; });
 
     // Stat cards
     var cardsHtml = "";
-    labels.forEach(function(l) {
-      var s = stats[l];
-      var th = thresholds.cities && thresholds.cities[cityNames[labels.indexOf(l)]];
+    selected.forEach(function(c, i) {
+      var s = stats[c];
+      var th = thresholdsData.cities && thresholdsData.cities[c];
       var threshStr = th ? th.stable_seconds + "s" : "N/A";
-      cardsHtml += '<div class="stat-card">' +
+      cardsHtml += '<div class="stat-card" style="border-top:3px solid ' + colors[i] + '">' +
         '<div class="num">' + s.total + '</div>' +
-        '<div class="label">' + l + ' early warnings</div>' +
+        '<div class="label">' + c + '</div>' +
         '<div style="margin-top:6px;font-size:13px">' +
           '<span style="color:#4CAF50">&#9679; ' + s.miss + ' miss</span> &nbsp;' +
           '<span style="color:#FF9800">&#9679; ' + s.immediate + ' imm</span> &nbsp;' +
@@ -159,14 +216,14 @@
     document.getElementById("stat-cards").innerHTML = cardsHtml;
 
     // Outcome stacked bar
-    new Chart(document.getElementById("outcomeChart"), {
+    charts.outcome = new Chart(document.getElementById("outcomeChart"), {
       type: "bar",
       data: {
-        labels: labels,
+        labels: selected,
         datasets: [
-          { label: "Miss (null)", data: labels.map(function(l) { return stats[l].miss; }), backgroundColor: "#4CAF50" },
-          { label: "Immediate hit (0)", data: labels.map(function(l) { return stats[l].immediate; }), backgroundColor: "#FF9800" },
-          { label: "Hit after gap (N)", data: labels.map(function(l) { return stats[l].gapCount; }), backgroundColor: "#F44336" }
+          { label: "Miss (null)", data: selected.map(function(c) { return stats[c].miss; }), backgroundColor: "#4CAF50" },
+          { label: "Immediate hit (0)", data: selected.map(function(c) { return stats[c].immediate; }), backgroundColor: "#FF9800" },
+          { label: "Hit after gap (N)", data: selected.map(function(c) { return stats[c].gapCount; }), backgroundColor: "#F44336" }
         ]
       },
       options: {
@@ -177,25 +234,20 @@
 
     // Histogram — unified bins
     var allGaps = [];
-    labels.forEach(function(l) { allGaps = allGaps.concat(stats[l].gapIntervals); });
+    selected.forEach(function(c) { allGaps = allGaps.concat(stats[c].gapIntervals); });
     var maxIv = allGaps.length > 0 ? Math.max.apply(null, allGaps) : 0;
     var unifiedBins = [];
     for (var b = 0; b <= maxIv + 30; b += 30) unifiedBins.push(b);
-    var binLabels = unifiedBins.map(function(b) {
-      if (b === 0) return "0";
-      if (b < 60) return b + "s";
-      if (b % 60 === 0) return (b / 60) + "m";
-      return Math.floor(b / 60) + "m" + (b % 60 < 10 ? "0" : "") + (b % 60) + "s";
-    });
+    var binLabels = unifiedBins.map(fmtThresh);
 
-    new Chart(document.getElementById("histAll"), {
+    charts.hist = new Chart(document.getElementById("histAll"), {
       type: "bar",
       data: {
         labels: binLabels,
-        datasets: labels.map(function(l, i) {
+        datasets: selected.map(function(c, i) {
           return {
-            label: l,
-            data: unifiedBins.map(function(b) { return stats[l].histBins[b] || 0; }),
+            label: c,
+            data: unifiedBins.map(function(b) { return stats[c].histBins[b] || 0; }),
             backgroundColor: colors[i] + "CC",
             borderColor: colors[i],
             borderWidth: 1
@@ -203,78 +255,60 @@
         })
       },
       options: {
-        plugins: {
-          title: { display: true, text: "Gap Interval Distribution (30s bins)" },
-          annotation: { annotations: {} }
-        },
+        plugins: { title: { display: true, text: "Gap Interval Distribution (30s bins)" } },
         scales: { y: { title: { display: true, text: "Count" } } }
       }
     });
 
     // FN rate chart
-    var threshLabels = stats[labels[0]].thresholdValues.map(function(t) {
-      if (t === 0) return "0";
-      if (t < 60) return t + "s";
-      if (t % 60 === 0) return (t / 60) + "m";
-      return Math.floor(t / 60) + "m" + (t % 60 < 10 ? "0" : "") + (t % 60) + "s";
-    });
-    // Truncate at last non-zero + 1
+    var threshLabels = stats[selected[0]].thresholdValues.map(fmtThresh);
     var maxUseful = 0;
-    labels.forEach(function(l) {
-      stats[l].fnRates.forEach(function(r, i) { if (r > 0) maxUseful = Math.max(maxUseful, i); });
+    selected.forEach(function(c) {
+      stats[c].fnRates.forEach(function(r, i) { if (r > 0) maxUseful = Math.max(maxUseful, i); });
     });
     var cutoff = Math.min(maxUseful + 2, threshLabels.length);
     threshLabels = threshLabels.slice(0, cutoff);
 
-    // Insight box: show selected thresholds
-    var insightParts = [];
-    labels.forEach(function(l, i) {
-      var cn = cityNames[i];
-      var th = thresholds.cities && thresholds.cities[cn];
-      if (th) {
-        insightParts.push("<strong>" + l + ": " + th.stable_seconds + "s</strong> (" +
-          (th.fn_rate * 100).toFixed(1) + "% FN, " + th.events + " events)");
-      }
-    });
-    document.getElementById("insight-box").innerHTML =
-      "Selected thresholds (≤5% false negative rate): " + insightParts.join(" &nbsp;|&nbsp; ");
-
-    // Add per-city annotation lines for their thresholds
     var annotations = {
-      fivePct: {
-        type: "line", yMin: 5, yMax: 5,
+      fivePct: { type: "line", yMin: 5, yMax: 5,
         borderColor: "rgba(255,0,0,0.3)", borderWidth: 1, borderDash: [5, 5],
-        label: { content: "5% target", display: true, position: "end" }
-      }
+        label: { content: "5% target", display: true, position: "end" } }
     };
-    labels.forEach(function(l, i) {
-      var cn = cityNames[i];
-      var th = thresholds.cities && thresholds.cities[cn];
+    selected.forEach(function(c, i) {
+      var th = thresholdsData.cities && thresholdsData.cities[c];
       if (th) {
         var idx = th.stable_seconds / 30;
         if (idx < cutoff) {
           annotations["thresh_" + i] = {
             type: "line", xMin: idx, xMax: idx,
             borderColor: colors[i], borderWidth: 2, borderDash: [5, 5],
-            label: { content: l + " " + th.stable_seconds + "s", display: true, position: "start", color: colors[i] }
+            label: { content: c + " " + th.stable_seconds + "s", display: true, position: "start", color: colors[i] }
           };
         }
       }
     });
 
-    new Chart(document.getElementById("fnRateChart"), {
+    // Insight box
+    var insightParts = [];
+    selected.forEach(function(c) {
+      var th = thresholdsData.cities && thresholdsData.cities[c];
+      if (th) {
+        insightParts.push("<strong>" + c + ": " + th.stable_seconds + "s</strong> (" +
+          (th.fn_rate * 100).toFixed(1) + "% FN, " + th.events + " events)");
+      }
+    });
+    document.getElementById("insight-box").innerHTML =
+      "Selected thresholds (\u22645% false negative rate): " + insightParts.join(" &nbsp;|&nbsp; ");
+
+    charts.fnRate = new Chart(document.getElementById("fnRateChart"), {
       type: "line",
       data: {
         labels: threshLabels,
-        datasets: labels.map(function(l, i) {
+        datasets: selected.map(function(c, i) {
           return {
-            label: l,
-            data: stats[l].fnRates.slice(0, cutoff),
-            borderColor: colors[i],
-            backgroundColor: colors[i] + "20",
-            fill: false,
-            tension: 0,
-            pointRadius: 3
+            label: c, data: stats[c].fnRates.slice(0, cutoff),
+            borderColor: colors[i], backgroundColor: colors[i] + "20",
+            fill: false, tension: 0, pointRadius: 3
           };
         })
       },
@@ -291,20 +325,19 @@
     });
 
     // Threshold table
-    var tableHtml = '<table style="border-collapse:collapse;margin:16px 0;background:white;box-shadow:0 2px 8px rgba(0,0,0,0.1);border-radius:8px;overflow:hidden">';
-    tableHtml += '<tr style="background:#f5f5f5"><th style="padding:8px 16px">City</th><th style="padding:8px 16px">Threshold</th><th style="padding:8px 16px">Events</th><th style="padding:8px 16px">FN Rate</th><th style="padding:8px 16px">Miss</th><th style="padding:8px 16px">Miss w/ sirens</th><th style="padding:8px 16px">Immediate</th><th style="padding:8px 16px">Gap</th></tr>';
-    labels.forEach(function(l, i) {
-      var s = stats[l];
-      var cn = cityNames[i];
-      var th = thresholds.cities && thresholds.cities[cn];
-      tableHtml += '<tr><td style="padding:8px 16px;font-weight:bold">' + l + ' (' + cn + ')</td>';
-      tableHtml += '<td style="padding:8px 16px">' + (th ? th.stable_seconds + "s" : "N/A") + '</td>';
-      tableHtml += '<td style="padding:8px 16px">' + s.total + '</td>';
-      tableHtml += '<td style="padding:8px 16px">' + (th ? (th.fn_rate * 100).toFixed(1) + "%" : "N/A") + '</td>';
-      tableHtml += '<td style="padding:8px 16px">' + s.miss + '</td>';
-      tableHtml += '<td style="padding:8px 16px">' + s.missWithSirens + '</td>';
-      tableHtml += '<td style="padding:8px 16px">' + s.immediate + '</td>';
-      tableHtml += '<td style="padding:8px 16px">' + s.gapCount + '</td></tr>';
+    var tableHtml = '<table style="border-collapse:collapse;margin:16px 0;background:white;box-shadow:0 2px 8px rgba(0,0,0,0.1);border-radius:8px;overflow:hidden;width:100%">';
+    tableHtml += '<tr style="background:#f5f5f5"><th style="padding:8px 12px">City</th><th style="padding:8px 12px">Threshold</th><th style="padding:8px 12px">Events</th><th style="padding:8px 12px">FN Rate</th><th style="padding:8px 12px">Miss</th><th style="padding:8px 12px">Miss+sirens</th><th style="padding:8px 12px">Immediate</th><th style="padding:8px 12px">Gap</th></tr>';
+    selected.forEach(function(c, i) {
+      var s = stats[c];
+      var th = thresholdsData.cities && thresholdsData.cities[c];
+      tableHtml += '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px;font-weight:bold;border-left:3px solid ' + colors[i] + '">' + c + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + (th ? th.stable_seconds + "s" : "N/A") + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + s.total + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + (th ? (th.fn_rate * 100).toFixed(1) + "%" : "N/A") + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + s.miss + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + s.missWithSirens + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + s.immediate + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + s.gapCount + '</td></tr>';
     });
     tableHtml += '</table>';
     document.getElementById("threshold-table").innerHTML = tableHtml;
