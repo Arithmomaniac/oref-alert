@@ -226,6 +226,7 @@ END_CATEGORY = 13
 PRE_ALERT_CATEGORY = 14
 EVENT_WINDOW_MIN = 20
 CSV_URL = "https://raw.githubusercontent.com/dleshem/israel-alerts-data/refs/heads/main/israel-alerts.csv"
+CITIES_MIX_URL = "https://alerts-history.oref.org.il/Shared/Ajax/GetCitiesMix.aspx"
 
 # These cities always get thresholds computed, regardless of registration
 ALWAYS_ACTIVE_CITIES = ["כרמיאל", "בית שמש", "חריש"]
@@ -489,3 +490,14 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
     _write_json_blob(container, "api/gap_data.json", gap_data)
     _write_json_blob(container, "api/thresholds.json", thresholds)
     logging.info("Wrote thresholds for %d cities", len(thresholds["cities"]))
+
+    # Refresh the cached city list from oref
+    try:
+        resp = httpx.get(CITIES_MIX_URL, timeout=30.0)
+        resp.raise_for_status()
+        raw = resp.json()
+        labels = sorted({entry.get("label_he", entry.get("label", "")) for entry in raw} - {""})
+        _write_json_blob(container, "api/cities.json", labels)
+        logging.info("Refreshed cities.json: %d cities", len(labels))
+    except Exception:
+        logging.exception("Failed to refresh cities.json — keeping previous version")

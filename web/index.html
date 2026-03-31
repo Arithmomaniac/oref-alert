@@ -210,6 +210,11 @@ body {
   display: flex;
   justify-content: center;
   gap: 0.5em;
+  position: relative;
+}
+#city-input-wrap {
+  position: relative;
+  width: min(300px, 60vw);
 }
 #city-input {
   font-size: clamp(1rem, 2.5vmin, 3vw);
@@ -220,10 +225,38 @@ body {
   color: #fff;
   direction: rtl;
   outline: none;
-  width: min(300px, 60vw);
+  width: 100%;
 }
 #city-input::placeholder { color: rgba(255,255,255,0.5); }
 #city-input:focus { border-color: #fff; }
+#city-input.invalid { border-color: #ff5252; }
+#city-suggestions {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  background: #333;
+  border-radius: 0 0 8px 8px;
+  max-height: 40vh;
+  overflow-y: auto;
+  z-index: 60;
+  direction: rtl;
+}
+#city-suggestions .sug {
+  padding: 0.5em 0.8em;
+  cursor: pointer;
+  font-size: clamp(0.85rem, 2vmin, 2.5vw);
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+#city-suggestions .sug:hover,
+#city-suggestions .sug.active { background: rgba(255,255,255,0.15); }
+#city-error {
+  display: none;
+  color: #ff5252;
+  margin-top: 0.5em;
+  font-size: clamp(0.8rem, 2vmin, 2.5vw);
+}
 #city-go {
   font-size: clamp(1rem, 2.5vmin, 3vw);
   padding: 0.4em 1em;
@@ -232,14 +265,31 @@ body {
   background: rgba(255,255,255,0.3);
   color: #fff;
   cursor: pointer;
+  align-self: flex-start;
 }
 #city-go:hover { background: rgba(255,255,255,0.5); }
+
+/* --- Invalid city banner --- */
+#invalid-city {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0.8em 1em;
+  background: rgba(255, 82, 82, 0.9);
+  color: #fff;
+  text-align: center;
+  font-size: clamp(0.7rem, 1.8vmin, 2vw);
+  z-index: 100;
+}
 </style>
 </head>
 <body>
 
 <div id="session-banner">⚠ תוקף הפעלה יפוג מחר — לחצו בכל מקום כדי להאריך</div>
 <div id="conn-warning"></div>
+<div id="invalid-city"></div>
 
 <div id="center">
   <div id="status-text"></div>
@@ -253,9 +303,13 @@ body {
 <div id="no-city">
   <h1>הזינו שם עיר</h1>
   <form id="city-form" onsubmit="return false;">
-    <input id="city-input" type="text" placeholder="לדוגמה: בית שמש" autocomplete="off" />
+    <div id="city-input-wrap">
+      <input id="city-input" type="text" placeholder="לדוגמה: בית שמש" autocomplete="off" />
+      <div id="city-suggestions"></div>
+    </div>
     <button id="city-go" type="submit">&#x25B6;</button>
   </form>
+  <div id="city-error">עיר לא נמצאה במערכת</div>
   <p dir="ltr" style="direction:ltr; margin-top:1em; opacity:0.6">or add <code>?city=YourCity</code> to the URL</p>
 </div>
 
@@ -321,6 +375,7 @@ body {
   var thresholdsData = null;
   var lastThresholdFetch = 0;
   var firstPoll = true; // on first poll, replay history to rebuild event log
+  var knownCities = null; // fetched from /api/cities.json
 
   // ── Parse city from query string ───────────────────────────
   function getCity() {
@@ -798,24 +853,99 @@ body {
       elEventLog.style.display = "none";
       elNoCity.style.display = "block";
 
-      // City input form handler
       var cityForm = document.getElementById("city-form");
       var cityInput = document.getElementById("city-input");
-      if (cityForm && cityInput) {
+      var citySugg = document.getElementById("city-suggestions");
+      var cityError = document.getElementById("city-error");
+      var activeIdx = -1;
+
+      // Fetch city list for autocomplete
+      fetch("/api/cities.json")
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) { if (data) knownCities = data; })
+        .catch(function() {});
+
+      function showSuggestions(matches) {
+        if (!matches.length) { citySugg.style.display = "none"; activeIdx = -1; return; }
+        var html = "";
+        for (var i = 0; i < Math.min(matches.length, 8); i++) {
+          html += '<div class="sug" data-city="' + escapeHtml(matches[i]) + '">' + escapeHtml(matches[i]) + '</div>';
+        }
+        citySugg.innerHTML = html;
+        citySugg.style.display = "block";
+        activeIdx = -1;
+      }
+
+      function selectCity(name) {
+        cityInput.value = name;
+        citySugg.style.display = "none";
+        cityError.style.display = "none";
+        cityInput.classList.remove("invalid");
+      }
+
+      if (cityInput) {
+        cityInput.addEventListener("input", function() {
+          cityError.style.display = "none";
+          cityInput.classList.remove("invalid");
+          var val = cityInput.value.trim();
+          if (!val || !knownCities) { citySugg.style.display = "none"; return; }
+          var matches = knownCities.filter(function(c) { return c.indexOf(val) !== -1; });
+          showSuggestions(matches);
+        });
+
+        cityInput.addEventListener("keydown", function(e) {
+          var items = citySugg.querySelectorAll(".sug");
+          if (!items.length) return;
+          if (e.key === "ArrowDown") { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); }
+          else if (e.key === "Enter" && activeIdx >= 0) { e.preventDefault(); selectCity(items[activeIdx].dataset.city); return; }
+          else return;
+          for (var i = 0; i < items.length; i++) items[i].classList.toggle("active", i === activeIdx);
+        });
+
+        citySugg.addEventListener("click", function(e) {
+          var el = e.target.closest(".sug");
+          if (el) selectCity(el.dataset.city);
+        });
+
+        document.addEventListener("click", function(e) {
+          if (!citySugg.contains(e.target) && e.target !== cityInput) citySugg.style.display = "none";
+        });
+
+        cityInput.focus();
+      }
+
+      if (cityForm) {
         cityForm.addEventListener("submit", function(e) {
           e.preventDefault();
           var val = cityInput.value.trim();
-          if (val) {
-            window.location.search = "?city=" + encodeURIComponent(val);
+          if (!val) return;
+          if (knownCities && knownCities.indexOf(val) === -1) {
+            cityInput.classList.add("invalid");
+            cityError.style.display = "block";
+            return;
           }
+          window.location.search = "?city=" + encodeURIComponent(val);
         });
-        cityInput.focus();
       }
       return;
     }
 
     // Show city label
     elCityLabel.textContent = city;
+
+    // Validate city against known list and show warning if invalid
+    fetch("/api/cities.json")
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (data && data.indexOf(city) === -1) {
+          var elInvalid = document.getElementById("invalid-city");
+          elInvalid.textContent = "\u26A0 \u0022" + city + "\u0022 \u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D4 \u05D1\u05E8\u05E9\u05D9\u05DE\u05EA \u05D4\u05E2\u05E8\u05D9\u05DD";
+          // ⚠ "city" לא נמצאה ברשימת הערים
+          elInvalid.style.display = "block";
+        }
+      })
+      .catch(function() {});
 
     // Fetch thresholds and register city
     fetchThresholds();
