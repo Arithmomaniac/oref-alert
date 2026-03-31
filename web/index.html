@@ -334,9 +334,9 @@ body {
     return (params.get("city") || "").trim();
   }
 
-  function getStableOverride() {
+  function getMissedUsOverride() {
     var params = new URLSearchParams(window.location.search);
-    var v = params.get("stable");
+    var v = params.get("missedus");
     return v ? parseInt(v, 10) : null;
   }
 
@@ -359,18 +359,27 @@ body {
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(data) {
         if (!data) return;
+        // Ignore stale thresholds (>2 days old)
+        if (data.updated) {
+          var age = Date.now() - new Date(data.updated).getTime();
+          if (age > 2 * 24 * 60 * 60 * 1000) {
+            stableThresholdMs = null;
+            lastThresholdFetch = Date.now();
+            return;
+          }
+        }
         thresholdsData = data;
-        var override = getStableOverride();
+        var override = getMissedUsOverride();
         if (override !== null) {
           stableThresholdMs = override * 1000;
         } else if (data.cities && data.cities[city]) {
           stableThresholdMs = data.cities[city].stable_seconds * 1000;
         } else {
-          stableThresholdMs = null; // no data for this city — disable missed-us
+          stableThresholdMs = null;
         }
         lastThresholdFetch = Date.now();
       })
-      .catch(function() { /* ignore, use default */ });
+      .catch(function() { /* ignore */ });
   }
 
   function registerCity() {
