@@ -376,6 +376,7 @@ body {
   var lastThresholdFetch = 0;
   var firstPoll = true; // on first poll, replay history to rebuild event log
   var knownCities = null; // fetched from /api/cities.json
+  var thresholdPollTimer = null; // polls thresholds.json until city appears
 
   // ── Parse city from query string ───────────────────────────
   function getCity() {
@@ -433,6 +434,20 @@ body {
 
   function registerCity() {
     fetch(FUNC_API + "/register?city=" + encodeURIComponent(city)).catch(function() {});
+    // If we don't have a threshold yet, trigger on-demand computation
+    if (stableThresholdMs === null && getMissedUsOverride() === null) {
+      fetch(FUNC_API + "/compute?city=" + encodeURIComponent(city)).catch(function() {});
+      // Poll thresholds.json every 30s until our city appears
+      if (!thresholdPollTimer) {
+        thresholdPollTimer = setInterval(function() {
+          fetchThresholds();
+          if (stableThresholdMs !== null) {
+            clearInterval(thresholdPollTimer);
+            thresholdPollTimer = null;
+          }
+        }, 30000);
+      }
+    }
   }
 
   // ── Classification logic ───────────────────────────────────
@@ -569,21 +584,26 @@ body {
     // Show missed-us explanation only in yellow_orange state
     if (color === "yellow_orange") {
       var threshSec = Math.round(stableThresholdMs / 1000);
+      var threshMin = threshSec >= 60 ? Math.floor(threshSec / 60) + ":" + String(threshSec % 60).padStart(2, "0") : threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA";
       var html = "\u05E2\u05E8\u05D9\u05DD \u05D0\u05D7\u05E8\u05D5\u05EA \u05D1\u05D0\u05D5\u05EA\u05D4 " +
         "\u05D4\u05EA\u05E8\u05E2\u05D4 \u05E7\u05D9\u05D1\u05DC\u05D5 \u05D0\u05D6\u05E2\u05E7\u05D5\u05EA, " +
         "\u05D0\u05DA " + city + " \u05DC\u05D0 \u05E7\u05D9\u05D1\u05DC\u05D4 \u05D1\u05DE\u05E9\u05DA " +
-        threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA.";
-      // ערים אחרות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N שניות.
-      html += '<div class="mu-detail">';
-      html += "Other cities in the same alert received sirens, but " + escapeHtml(city) +
-        " did not for " + threshSec + " seconds.";
-      html += "<br>The threshold is calibrated so that this indication is correct at least 95% of the time, " +
-        "based on historical alert patterns for this city.";
+        threshMin + ".";
+      // ערים אחרות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N.
       var ci = thresholdsData && thresholdsData.cities && thresholdsData.cities[city];
+      html += '<div class="mu-detail">';
       if (ci) {
         var accuracy = ((1 - ci.fn_rate) * 100).toFixed(0);
-        html += " (" + ci.events + " events analyzed, " + accuracy + "% accuracy)";
+        html += "\u05E1\u05E3 " + city + ": " + threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA " +
+          "(" + ci.events + " \u05D0\u05D9\u05E8\u05D5\u05E2\u05D9\u05DD \u05D4\u05D9\u05E1\u05D8\u05D5\u05E8\u05D9\u05D9\u05DD, " +
+          accuracy + "% \u05D3\u05D9\u05D5\u05E7)";
+        // סף [city]: N שניות (M אירועים היסטוריים, X% דיוק)
+        html += "<br>";
       }
+      html += "Other cities in the same alert received sirens, but " + escapeHtml(city) +
+        " did not for " + threshSec + "s. ";
+      html += "The " + threshSec + "s threshold for " + escapeHtml(city) +
+        " is calibrated from historical data so this indication is correct at least 95% of the time.";
       html += "</div>";
       elMissedUsInfo.innerHTML = html;
       elMissedUsInfo.style.display = "block";

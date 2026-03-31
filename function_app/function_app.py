@@ -217,6 +217,91 @@ def register_city(req: func.HttpRequest) -> func.HttpResponse:
     )
 
 
+@app.function_name("compute_city")
+@app.route(route="compute", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def compute_city(req: func.HttpRequest) -> func.HttpResponse:
+    """On-demand threshold computation for a single city."""
+    city = req.params.get("city")
+    if not city:
+        return func.HttpResponse("Missing 'city' query parameter", status_code=400)
+
+    container = _get_container_client()
+
+    # Check if city already has a threshold
+    thresholds = _read_json_blob(container, "api/thresholds.json", default={})
+    if thresholds.get("cities", {}).get(city):
+        return func.HttpResponse(
+            json.dumps({"ok": True, "city": city, "status": "already_computed",
+                        "threshold": thresholds["cities"][city]}, ensure_ascii=False),
+            status_code=200, mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    logging.info("On-demand compute for city: %s", city)
+
+    gap_data = _read_json_blob(
+        container, "api/gap_data.json",
+        default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
+    )
+
+    # Download CSV (incremental if possible)
+    byte_offset = gap_data.get("csv_byte_offset", 0)
+    headers = {}
+    if byte_offset > 0:
+        headers["Range"] = f"bytes={byte_offset}-"
+
+    resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
+    resp.raise_for_status()
+    raw_bytes = resp.content
+
+    if byte_offset > 0 and resp.status_code == 206:
+        csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
+        new_total_bytes = byte_offset + len(raw_bytes)
+    else:
+        csv_text = raw_bytes.decode("utf-8")
+        new_total_bytes = len(raw_bytes)
+
+    now = datetime.now(timezone.utc)
+    cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
+    all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
+
+    # For a new city we need to scan all data (watermark doesn't apply)
+    new_events = _analyze_city(city, all_rows, pre_alerts_by_date, watermark_dt=None)
+
+    # Update gap_data for this city
+    gap_data["cities"][city] = new_events
+    gap_data["csv_byte_offset"] = new_total_bytes
+    if all_rows:
+        latest_dt = max(dt for dt, *_ in all_rows)
+        gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
+
+    # Compute threshold
+    stable_sec, event_count, fn_rate = _compute_threshold(new_events)
+    city_threshold = {
+        "stable_seconds": stable_sec,
+        "events": event_count,
+        "fn_rate": round(fn_rate, 4),
+    }
+
+    # Update thresholds.json
+    if "cities" not in thresholds:
+        thresholds["cities"] = {}
+    thresholds["cities"][city] = city_threshold
+    thresholds["updated"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    _write_json_blob(container, "api/gap_data.json", gap_data)
+    _write_json_blob(container, "api/thresholds.json", thresholds)
+    logging.info("Computed threshold for %s: %ds (%d events, %.1f%% FN)",
+                 city, stable_sec, event_count, fn_rate * 100)
+
+    return func.HttpResponse(
+        json.dumps({"ok": True, "city": city, "status": "computed",
+                    "threshold": city_threshold}, ensure_ascii=False),
+        status_code=200, mimetype="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Daily timer-triggered compute_thresholds
 # ---------------------------------------------------------------------------
