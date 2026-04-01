@@ -207,7 +207,7 @@ console.log("\n5. Cohort siren trickle resets timer");
 
 // ── Test 6: PRE_ALERT expiry ──
 
-console.log("\n6. PRE_ALERT expiry after 20 minutes");
+console.log("\n6. PRE_ALERT expiry after 180 minutes");
 {
   var es = engine.createState({ stableThresholdMs: 240000 });
   var now = tMs("09:00:40");
@@ -219,11 +219,11 @@ console.log("\n6. PRE_ALERT expiry after 20 minutes");
   var r1 = engine.processState(state1, es, CITY, now);
   assertColor(r1, "yellow", "PRE_ALERT → yellow");
 
-  // 21 minutes later (past 20-min expiry), no more alerts
-  now += 21 * 60 * 1000;
+  // 181 minutes later (past 180-min expiry), no more alerts
+  now += 181 * 60 * 1000;
   var state2 = makeStateJson([], []);
   var r2 = engine.processState(state2, es, CITY, now);
-  assertColor(r2, "green", "21 minutes later → expired → green");
+  assertColor(r2, "green", "181 minutes later → expired → green");
 }
 
 // ── Test 7: RT alert dedup ──

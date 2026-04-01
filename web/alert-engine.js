@@ -32,7 +32,7 @@ export var PRE_ALERT = "pre_alert";
 export var END = "end";
 
 export var ALERT_EXPIRY_MIN = 180;
-export var PRE_ALERT_EXPIRY_MIN = 20;
+export var PRE_ALERT_EXPIRY_MIN = 180;
 export var DEDUP_WINDOW_SEC = 180;
 export var MAX_EVENTS = 10;
 export var STALE_THRESHOLD_SEC = 60;
