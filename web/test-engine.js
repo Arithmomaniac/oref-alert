@@ -81,27 +81,39 @@ console.log("\n1. Happy path — real-time amber");
 
 // ── Test 2: Today's bug — history-only PRE_ALERT (no cohort tracking) ──
 
-console.log("\n2. History-only PRE_ALERT — no amber (regression test for bug)");
+console.log("\n2. History-only PRE_ALERT — amber via cohort reconstruction (bug fix)");
 {
   var es = engine.createState({ stableThresholdMs: 240000 });
-  var now = tMs("09:05:00");
+  var now = tMs("09:20:00"); // well past 240s after sirens at 09:06:31
 
   // Client opened AFTER the real-time PRE_ALERT disappeared.
-  // state.alerts has only sirens; history has the PRE_ALERT.
+  // state.alerts has only sirens; history has the PRE_ALERT + cohort PRE_ALERTs + cohort sirens.
   var state1 = makeStateJson(
     [{ cat: "1", title: "ירי רקטות וטילים", data: COHORT }],
-    [{ alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
-       data: CITY, category: 14 }],
+    [
+      // Our city's PRE_ALERT
+      { alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        data: CITY, category: 14 },
+      // Cohort PRE_ALERTs (same alertDate)
+      { alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        data: "תל אביב - דרום העיר ויפו", category: 14 },
+      { alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        data: "ראשון לציון - מזרח", category: 14 },
+      { alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        data: "חולון", category: 14 },
+      // Cohort sirens from history
+      { alertDate: "2026-04-01 09:06:31", title: "ירי רקטות וטילים",
+        data: "תל אביב - דרום העיר ויפו", category: 1 },
+      { alertDate: "2026-04-01 09:06:31", title: "ירי רקטות וטילים",
+        data: "ראשון לציון - מזרח", category: 1 },
+      { alertDate: "2026-04-01 09:06:31", title: "ירי רקטות וטילים",
+        data: "חולון", category: 1 },
+    ],
   );
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "yellow", "PRE_ALERT from history → yellow");
-  assert(es.cohortCities.size === 0, "cohortCities is EMPTY (never set from real-time)");
-
-  // Even after 240s, no amber because cohortCities was never populated
-  now += 300000;
-  var r2 = engine.processState(state1, es, CITY, now);
-  assertColor(r2, "yellow", "300s later → still yellow, NOT amber (bug confirmed)");
-  assert(es.sirenCohortCities.size === 0, "sirenCohortCities still empty");
+  assertColor(r1, "yellow_orange", "history cohort reconstruction → amber");
+  assert(es.cohortCities.size === 3, "cohortCities reconstructed from history");
+  assert(es.sirenCohortCities.size === 3, "sirenCohortCities populated from history");
 }
 
 // ── Test 3: END before threshold ──
@@ -236,6 +248,31 @@ console.log("\n7. RT alert dedup across polls");
   var r2 = engine.processState(state1, es, CITY, now);
   var eventCount2 = r2.events.filter(function(e) { return e.source === "RT"; }).length;
   assert(eventCount2 === 0, "second poll with same data → no new RT events (deduped)");
+}
+
+// ── Test 8: History PRE_ALERT with no cohort sirens → stays yellow ──
+
+console.log("\n8. History PRE_ALERT with no cohort sirens → yellow (no false amber)");
+{
+  var es = engine.createState({ stableThresholdMs: 240000 });
+  var now = tMs("09:20:00");
+
+  // History has PRE_ALERT for our city and cohort, but NO sirens for anyone
+  var state1 = makeStateJson(
+    [],
+    [
+      { alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        data: CITY, category: 14 },
+      { alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        data: "תל אביב - דרום העיר ויפו", category: 14 },
+      { alertDate: "2026-04-01 09:00:38", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+        data: "ראשון לציון - מזרח", category: 14 },
+    ],
+  );
+  var r1 = engine.processState(state1, es, CITY, now);
+  assertColor(r1, "yellow", "history cohort but no sirens → stays yellow");
+  assert(es.cohortCities.size === 2, "cohortCities reconstructed (2 cohort cities)");
+  assert(es.sirenCohortCities.size === 0, "sirenCohortCities empty (no sirens in history)");
 }
 
 // ── Summary ──

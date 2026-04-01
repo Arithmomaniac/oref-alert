@@ -291,8 +291,51 @@ export function processState(state, es, city, nowMs) {
       if (hChanged) {
         es.currentRecord = hRec;
       }
+
+      // Reconstruct cohort from history when PRE_ALERT came from history
+      if (hType === PRE_ALERT && hChanged && es.cohortCities.size === 0) {
+        var preAlertDate = hist.alertDate || "";
+        // Find other cities with cat=14 and matching alertDate
+        for (var c = 0; c < state.history.length; c++) {
+          var ch = state.history[c];
+          if (parseInt(ch.category || ch.cat, 10) !== HIST_PRE_ALERT_CATEGORY) continue;
+          if ((ch.alertDate || "") !== preAlertDate) continue;
+          var chCity = ch.data || "";
+          if (chCity && chCity !== city) {
+            es.cohortCities.add(chCity);
+          }
+        }
+        // Find cohort cities that got sirens in history
+        if (es.cohortCities.size > 0) {
+          for (var s = 0; s < state.history.length; s++) {
+            var sh = state.history[s];
+            var sCat = parseInt(sh.category || sh.cat, 10);
+            if (!HIST_ALERT_CATEGORIES.has(sCat)) continue;
+            var sCity = sh.data || "";
+            if (es.cohortCities.has(sCity) && !es.sirenCohortCities.has(sCity)) {
+              es.sirenCohortCities.add(sCity);
+              // Use the siren's alertDate as the stable-since time
+              var sirenTime = sh.alertDate ? parseAlertDate(sh.alertDate).getTime() : nowMs;
+              es.sirenCohortStableSince = sirenTime;
+            }
+          }
+        }
+      }
+
       var hDotColor = getColor(hRec, es, nowMs) === "red" ? "red" : getColor(hRec, es, nowMs) === "yellow" ? "yellow" : "green";
       events.push({ dotColor: hDotColor, title: hTitle || ("\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4 " + hCat), source: "HIST", causedChange: hChanged });
+    }
+  }
+
+  // ── Post-history amber check (mirrors Pass 2 transition event) ──
+  if (es.cohortCities.size > 0 && es.currentRecord && es.currentRecord.type === PRE_ALERT) {
+    var postHistColor = getColor(es.currentRecord, es, nowMs);
+    if (postHistColor === "yellow_orange") {
+      var lastEvt2 = es.eventLog.length > 0 ? es.eventLog[0] : null;
+      var alreadyLogged = events.some(function(ev) { return ev.dotColor === "yellow_orange"; });
+      if (!alreadyLogged && (!lastEvt2 || lastEvt2.dotColor !== "yellow_orange")) {
+        events.push({ dotColor: "yellow_orange", title: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8", source: "SYS", causedChange: true });
+      }
     }
   }
 
