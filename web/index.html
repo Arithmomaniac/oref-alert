@@ -318,32 +318,16 @@ body {
   <p>Session expired — tap to reload</p>
 </div>
 
-<script>
+<script type="module">
+import * as engine from "./alert-engine.js";
+
 (function () {
   "use strict";
 
-  // ── Constants ──────────────────────────────────────────────
-  var RT_TO_HIST = { 1: 1, 3: 7, 4: 9, 5: 11, 6: 2, 7: 12, 13: 10 };
-  var HIST_ALERT_CATEGORIES = new Set([1, 2, 3, 4, 7, 8, 9, 10, 11, 12]);
-  var HIST_END_CATEGORY = 13;
-  var HIST_PRE_ALERT_CATEGORY = 14;
-  var RT_MESSAGE_CATEGORY = 10;
-  var PRE_ALERT_WORD = "\u05D1\u05D3\u05E7\u05D5\u05EA";   // בדקות
-  var END_WORD = "\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD";     // הסתיים
-
-  var ALERT = "alert";
-  var PRE_ALERT = "pre_alert";
-  var END = "end";
-
-  var ALERT_EXPIRY_MIN = 180;
-  var PRE_ALERT_EXPIRY_MIN = 20;
-  var DEDUP_WINDOW_SEC = 180;
-
+  // ── UI-only constants ─────────────────────────────────────
   var POLL_INTERVAL = 5000;
-  var MAX_EVENTS = 10;
   var SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
   var SESSION_WARN_MS = 6 * 24 * 60 * 60 * 1000;
-  var STALE_THRESHOLD_SEC = 60;
   var LS_KEY = "oref_lastActivity";
 
   // ── DOM refs ───────────────────────────────────────────────
@@ -362,21 +346,13 @@ body {
 
   // ── State ──────────────────────────────────────────────────
   var city = "";
-  var currentRecord = null;
-  var eventLog = [];
+  var es = engine.createState(); // engine state
   var failCount = 0;
-  var lastRtKeys = new Set();
   var pollTimer = null;
   var sessionExpired = false;
-  var cohortCities = new Set();
-  var sirenCohortCities = new Set();
-  var sirenCohortStableSince = null;
-  var stableThresholdMs = null;      // null = no data, disable missed-us
-  var thresholdsData = null;
   var lastThresholdFetch = 0;
-  var firstPoll = true; // on first poll, replay history to rebuild event log
-  var knownCities = null; // fetched from /api/cities.json
-  var thresholdPollTimer = null; // polls thresholds.json until city appears
+  var knownCities = null;
+  var thresholdPollTimer = null;
 
   // ── Parse city from query string ───────────────────────────
   function getCity() {
@@ -390,16 +366,6 @@ body {
     return v ? parseInt(v, 10) : null;
   }
 
-  function setsEqual(a, b) {
-    if (a.size !== b.size) return false;
-    var iter = a.values();
-    var next = iter.next();
-    while (!next.done) {
-      if (!b.has(next.value)) return false;
-      next = iter.next();
-    }
-    return true;
-  }
 
   // Function app URL for API calls that need server-side processing
   var FUNC_API = "https://orefalert-func.azurewebsites.net/api";
@@ -413,19 +379,19 @@ body {
         if (data.updated) {
           var age = Date.now() - new Date(data.updated).getTime();
           if (age > 2 * 24 * 60 * 60 * 1000) {
-            stableThresholdMs = null;
+            es.stableThresholdMs = null;
             lastThresholdFetch = Date.now();
             return;
           }
         }
-        thresholdsData = data;
+        es.thresholdsData = data;
         var override = getMissedUsOverride();
         if (override !== null) {
-          stableThresholdMs = override * 1000;
+          es.stableThresholdMs = override * 1000;
         } else if (data.cities && data.cities[city]) {
-          stableThresholdMs = data.cities[city].stable_seconds * 1000;
+          es.stableThresholdMs = data.cities[city].stable_seconds * 1000;
         } else {
-          stableThresholdMs = null;
+          es.stableThresholdMs = null;
         }
         lastThresholdFetch = Date.now();
       })
@@ -435,13 +401,13 @@ body {
   function registerCity() {
     fetch(FUNC_API + "/register?city=" + encodeURIComponent(city)).catch(function() {});
     // If we don't have a threshold yet, trigger on-demand computation
-    if (stableThresholdMs === null && getMissedUsOverride() === null) {
+    if (es.stableThresholdMs === null && getMissedUsOverride() === null) {
       fetch(FUNC_API + "/compute?city=" + encodeURIComponent(city)).catch(function() {});
       // Poll thresholds.json every 30s until our city appears
       if (!thresholdPollTimer) {
         thresholdPollTimer = setInterval(function() {
           fetchThresholds();
-          if (stableThresholdMs !== null) {
+          if (es.stableThresholdMs !== null) {
             clearInterval(thresholdPollTimer);
             thresholdPollTimer = null;
           }
@@ -450,103 +416,15 @@ body {
     }
   }
 
-  // ── Classification logic ───────────────────────────────────
-
-  function classifyRealtime(cat, title) {
-    if (cat === RT_MESSAGE_CATEGORY) {
-      if (title.indexOf(PRE_ALERT_WORD) !== -1) {
-        return { type: PRE_ALERT, histCat: HIST_PRE_ALERT_CATEGORY };
-      }
-      if (title.indexOf(END_WORD) !== -1) {
-        return { type: END, histCat: HIST_END_CATEGORY };
-      }
-      return { type: ALERT, histCat: RT_TO_HIST[cat] || cat };
-    }
-    var histCat = RT_TO_HIST[cat];
-    if (histCat === undefined) return { type: null, histCat: null };
-    if (HIST_ALERT_CATEGORIES.has(histCat)) {
-      return { type: ALERT, histCat: histCat };
-    }
-    return { type: null, histCat: null };
-  }
-
-  function classifyHistory(cat) {
-    if (cat === HIST_END_CATEGORY) return END;
-    if (cat === HIST_PRE_ALERT_CATEGORY) return PRE_ALERT;
-    if (HIST_ALERT_CATEGORIES.has(cat)) return ALERT;
-    return null;
-  }
-
-  function makeRecord(type, category, title, timeSec) {
-    var expiryMs = null;
-    if (type === ALERT) {
-      expiryMs = timeSec * 1000 + ALERT_EXPIRY_MIN * 60 * 1000;
-    } else if (type === PRE_ALERT) {
-      expiryMs = timeSec * 1000 + PRE_ALERT_EXPIRY_MIN * 60 * 1000;
-    }
-    return { type: type, category: category, title: title, time: timeSec, expiryMs: expiryMs };
-  }
-
-  function shouldUpdate(newRec, curRec) {
-    if (curRec === null) return true;
-    if (newRec.type === PRE_ALERT && curRec.type === ALERT) return false;
-    if (newRec.type === END) return newRec.time > curRec.time;
-    if (newRec.time <= curRec.time) return false;
-    if (newRec.category === curRec.category && (newRec.time - curRec.time) <= DEDUP_WINDOW_SEC) {
-      return false;
-    }
-    return true;
-  }
-
-  function removeExpired() {
-    if (currentRecord && currentRecord.expiryMs !== null && Date.now() > currentRecord.expiryMs) {
-      var endRec = makeRecord(END, HIST_END_CATEGORY, "פג תוקף", Math.floor(Date.now() / 1000));
-      currentRecord = endRec;
-      cohortCities = new Set();
-      sirenCohortCities = new Set();
-      sirenCohortStableSince = null;
-      addEvent("green", "פג תוקף התראה", "SYS", true);
-    }
-  }
-
-  function getColor(rec) {
-    if (!rec) return "green";
-    if (rec.type === ALERT) return "red";
-    if (rec.type === PRE_ALERT) {
-      if (stableThresholdMs !== null &&
-          sirenCohortCities.size > 0 && sirenCohortStableSince !== null &&
-          (Date.now() - sirenCohortStableSince) >= stableThresholdMs) {
-        return "yellow_orange";
-      }
-      return "yellow";
-    }
-    return "green";
-  }
-
-  // ── Event log ──────────────────────────────────────────────
-
-  function addEvent(dotColor, title, source, causedChange) {
-    if (!causedChange) return; // only log state-changing events
-    var now = new Date();
-    var hh = String(now.getHours()).padStart(2, "0");
-    var mm = String(now.getMinutes()).padStart(2, "0");
-    eventLog.unshift({
-      dotColor: dotColor,
-      time: hh + ":" + mm,
-      title: title,
-      source: source
-    });
-    if (eventLog.length > MAX_EVENTS) eventLog.length = MAX_EVENTS;
-    renderEventLog();
-  }
+  // ── Event log rendering ─────────────────────────────────────
 
   function renderEventLog() {
     var html = "";
-    for (var i = 0; i < eventLog.length; i++) {
-      var ev = eventLog[i];
+    for (var i = 0; i < es.eventLog.length; i++) {
+      var ev = es.eventLog[i];
       html += '<div class="ev">' +
         '<span class="dot dot-' + ev.dotColor + '"></span>' +
-        '<span class="ev-time">' + ev.time + '</span>' +
+        '<span class="ev-time">' + (ev.time || "") + '</span>' +
         escapeHtml(ev.title) +
         '</div>';
     }
@@ -557,11 +435,6 @@ body {
     var d = document.createElement("div");
     d.appendChild(document.createTextNode(s));
     return d.innerHTML;
-  }
-
-  function parseAlertDate(s) {
-    // oref dates use space ("2026-03-31 16:15:08") not T — Firefox requires T
-    return new Date(s.replace(" ", "T"));
   }
 
   // ── UI rendering ───────────────────────────────────────────
@@ -583,14 +456,14 @@ body {
     elStatus.textContent = info.label;
     // Show missed-us explanation only in yellow_orange state
     if (color === "yellow_orange") {
-      var threshSec = Math.round(stableThresholdMs / 1000);
+      var threshSec = Math.round(es.stableThresholdMs / 1000);
       var threshMin = threshSec >= 60 ? Math.floor(threshSec / 60) + ":" + String(threshSec % 60).padStart(2, "0") : threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA";
       var html = "\u05E2\u05E8\u05D9\u05DD \u05D0\u05D7\u05E8\u05D5\u05EA \u05D1\u05D0\u05D5\u05EA\u05D4 " +
         "\u05D4\u05EA\u05E8\u05E2\u05D4 \u05E7\u05D9\u05D1\u05DC\u05D5 \u05D0\u05D6\u05E2\u05E7\u05D5\u05EA, " +
         "\u05D0\u05DA " + city + " \u05DC\u05D0 \u05E7\u05D9\u05D1\u05DC\u05D4 \u05D1\u05DE\u05E9\u05DA " +
         threshMin + ".";
       // ערים אחרות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N.
-      var ci = thresholdsData && thresholdsData.cities && thresholdsData.cities[city];
+      var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[city];
       html += '<div class="mu-detail">';
       if (ci) {
         var accuracy = ((1 - ci.fn_rate) * 100).toFixed(0);
@@ -625,137 +498,31 @@ body {
 
   function processState(state) {
     failCount = 0;
+    var nowMs = Date.now();
 
-    // Check staleness
-    if (state.updated_at) {
-      var updatedMs = new Date(state.updated_at).getTime();
-      var ageSec = (Date.now() - updatedMs) / 1000;
-      if (ageSec > STALE_THRESHOLD_SEC) {
-        showWarning("\u26A0 \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD \u05DC\u05D0 \u05E2\u05D3\u05DB\u05E0\u05D9\u05D9\u05DD"); // ⚠ נתונים לא עדכניים
-      } else {
-        hideWarning();
+    // Delegate to engine
+    var result = engine.processState(state, es, city, nowMs);
+
+    // Apply staleness warning
+    if (result.staleWarning) {
+      showWarning(result.staleWarning);
+    } else {
+      hideWarning();
+    }
+
+    // Add timestamps to new events for display
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, "0");
+    var mm = String(now.getMinutes()).padStart(2, "0");
+    for (var e = 0; e < es.eventLog.length; e++) {
+      if (!es.eventLog[e].time) {
+        es.eventLog[e].time = hh + ":" + mm;
       }
     }
 
-    var prevColor = getColor(currentRecord);
-
-    // Process real-time alerts
-    var newRtKeys = new Set();
-    if (Array.isArray(state.alerts)) {
-      for (var i = 0; i < state.alerts.length; i++) {
-        var a = state.alerts[i];
-        var cat = parseInt(a.cat, 10);
-        var title = a.title || "";
-        var data = a.data || [];
-        var rtKey = cat + "|" + title + "|" + data.join(",");
-        newRtKeys.add(rtKey);
-
-        if (lastRtKeys.has(rtKey)) continue; // dedup across polls
-
-        var cityMatch = false;
-        for (var j = 0; j < data.length; j++) {
-          if (data[j] === city) { cityMatch = true; break; }
-        }
-        if (!cityMatch) continue;
-
-        var cl = classifyRealtime(cat, title);
-        if (cl.type === null) continue;
-
-        var timeSec = Math.floor(Date.now() / 1000);
-        var rec = makeRecord(cl.type, cl.histCat, title, timeSec);
-        var changed = shouldUpdate(rec, currentRecord);
-        if (changed) {
-          currentRecord = rec;
-        }
-
-        // Cohort tracking on PRE_ALERT
-        if (cl.type === PRE_ALERT) {
-          var newCohort = new Set(data.filter(function(d) { return d !== city; }));
-          if (!setsEqual(newCohort, cohortCities)) {
-            cohortCities = newCohort;
-            sirenCohortCities = new Set();
-            sirenCohortStableSince = null;
-          }
-        }
-        // Clear cohort when leaving PRE_ALERT
-        if (cl.type !== PRE_ALERT && changed) {
-          cohortCities = new Set();
-          sirenCohortCities = new Set();
-          sirenCohortStableSince = null;
-        }
-
-        addEvent(getColor(rec) === "green" ? "green" : getColor(rec) === "red" ? "red" : "yellow",
-          title, "RT", changed);
-      }
-    }
-    lastRtKeys = newRtKeys;
-
-    // --- Pass 2: check if cohort cities have sirens ---
-    if (cohortCities.size > 0 && currentRecord && currentRecord.type === PRE_ALERT) {
-      if (Array.isArray(state.alerts)) {
-        for (var p2 = 0; p2 < state.alerts.length; p2++) {
-          var a2 = state.alerts[p2];
-          var cat2 = parseInt(a2.cat, 10);
-          var cl2 = classifyRealtime(cat2, a2.title || "");
-          if (cl2.type !== ALERT) continue;
-
-          var data2 = a2.data || [];
-          for (var d2 = 0; d2 < data2.length; d2++) {
-            if (cohortCities.has(data2[d2]) && !sirenCohortCities.has(data2[d2])) {
-              sirenCohortCities.add(data2[d2]);
-              sirenCohortStableSince = Date.now();
-            }
-          }
-        }
-      }
-
-      // Check if we just transitioned to yellow_orange
-      var missedUsColor = getColor(currentRecord);
-      if (missedUsColor === "yellow_orange") {
-        var lastEvt = eventLog.length > 0 ? eventLog[0] : null;
-        if (!lastEvt || lastEvt.dotColor !== "yellow_orange") {
-          addEvent("yellow_orange", "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8", "SYS", true);
-        }
-      }
-    }
-
-    // Process history
-    if (Array.isArray(state.history)) {
-      for (var h = 0; h < state.history.length; h++) {
-        var hist = state.history[h];
-        var hData = hist.data || "";
-        if (hData !== city) continue;
-
-        var hCat = parseInt(hist.category || hist.cat, 10);
-        var hType = classifyHistory(hCat);
-        if (hType === null) continue;
-
-        var hTime = 0;
-        if (hist.alertDate) {
-          hTime = Math.floor(parseAlertDate(hist.alertDate).getTime() / 1000);
-        }
-        var hTitle = hist.title || "";
-        var hRec = makeRecord(hType, hCat, hTitle, hTime);
-        var hChanged = shouldUpdate(hRec, currentRecord);
-        if (hChanged) {
-          currentRecord = hRec;
-        }
-        var hDotColor = getColor(hRec) === "red" ? "red" : getColor(hRec) === "yellow" ? "yellow" : "green";
-        addEvent(hDotColor, hTitle || ("\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4 " + hCat), "HIST", hChanged);
-      }
-    }
-
-    // Check expiry
-    removeExpired();
-
-    var newColor = getColor(currentRecord);
-    applyColor(newColor);
-
-    // On first load, rebuild last 30 min of history into event log
-    if (firstPoll) {
-      firstPoll = false;
-      rebuildRecentHistory(state);
-    }
+    // Update UI
+    renderEventLog();
+    applyColor(result.color);
   }
 
   function poll() {
@@ -821,44 +588,6 @@ body {
     } else {
       elBanner.style.display = "none";
     }
-  }
-
-  // ── Rebuild recent history into event log ───────────────────
-
-  function rebuildRecentHistory(state) {
-    if (!Array.isArray(state.history)) return;
-    var historyWindowAgo = Date.now() - 3 * 60 * 60 * 1000;
-    var relevant = [];
-    for (var h = 0; h < state.history.length; h++) {
-      var hist = state.history[h];
-      if ((hist.data || "") !== city) continue;
-      var hCat = parseInt(hist.category || hist.cat, 10);
-      var hType = classifyHistory(hCat);
-      if (hType === null) continue;
-      var hTime = 0;
-      if (hist.alertDate) {
-        hTime = parseAlertDate(hist.alertDate).getTime();
-      }
-      if (hTime < historyWindowAgo) continue;
-      relevant.push({ type: hType, cat: hCat, title: hist.title || "", timeMs: hTime });
-    }
-    // Sort oldest first so unshift produces correct order
-    relevant.sort(function(a, b) { return a.timeMs - b.timeMs; });
-    for (var r = 0; r < relevant.length; r++) {
-      var ev = relevant[r];
-      var dotColor = ev.type === ALERT ? "red" : ev.type === PRE_ALERT ? "yellow" : "green";
-      var dt = new Date(ev.timeMs);
-      var hh = String(dt.getHours()).padStart(2, "0");
-      var mm = String(dt.getMinutes()).padStart(2, "0");
-      eventLog.unshift({
-        dotColor: dotColor,
-        time: hh + ":" + mm,
-        title: ev.title || ("\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4 " + ev.cat),
-        source: "HIST"
-      });
-    }
-    if (eventLog.length > MAX_EVENTS) eventLog.length = MAX_EVENTS;
-    if (relevant.length > 0) renderEventLog();
   }
 
   // ── Init ───────────────────────────────────────────────────

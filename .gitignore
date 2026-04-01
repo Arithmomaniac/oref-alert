@@ -1,3 +1,9 @@
+# Node / Playwright
+node_modules/
+test-results/
+playwright-report/
+web/tests/baseline-*.png
+
 # Python
 __pycache__/
 *.pyc

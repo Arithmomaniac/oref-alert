@@ -1,0 +1,24 @@
+{
+  "name": "oref-alert",
+  "version": "1.0.0",
+  "description": "Fullscreen traffic-light alert for Israeli cities.",
+  "type": "module",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:unit": "node web/test-engine.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Arithmomaniac/oref-alert.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Arithmomaniac/oref-alert/issues"
+  },
+  "homepage": "https://github.com/Arithmomaniac/oref-alert#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.59.0"
+  }
+}
