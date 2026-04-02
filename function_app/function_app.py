@@ -441,12 +441,12 @@ def _compute_gap(target_city, cohort_cities, sirens):
     """Compute gap analysis for a single pre-alert event.
 
     Returns (gap_seconds, outcome, cohort_sirens_count).
-      gap_seconds: 0 (immediate), positive (max gap), or None (miss)
+      gap_seconds: 0 (immediate), positive (first-siren-to-target gap), or None (miss)
       outcome: "immediate", "hit_after_gap", "miss"
       cohort_sirens_count: how many cohort cities got sirens
     """
     seen_cohort = set()
-    new_cohort_times = []
+    first_cohort_time = None
     city_siren_time = None
 
     for dt, areas in sirens:
@@ -455,18 +455,17 @@ def _compute_gap(target_city, cohort_cities, sirens):
         for cohort_city in cohort_cities:
             if cohort_city not in seen_cohort and any(_city_matches(a, cohort_city) for a in areas):
                 seen_cohort.add(cohort_city)
-                new_cohort_times.append(dt)
+                if first_cohort_time is None:
+                    first_cohort_time = dt
 
     if city_siren_time is None:
         return None, "miss", len(seen_cohort)
 
-    cohort_times_before = [t for t in new_cohort_times if t < city_siren_time]
-    if not cohort_times_before:
+    if first_cohort_time is None or first_cohort_time >= city_siren_time:
         return 0, "immediate", len(seen_cohort)
 
-    timestamps = cohort_times_before + [city_siren_time]
-    gaps = [(timestamps[i] - timestamps[i - 1]).total_seconds() for i in range(1, len(timestamps))]
-    return max(gaps), "hit_after_gap", len(seen_cohort)
+    gap = (city_siren_time - first_cohort_time).total_seconds()
+    return gap, "hit_after_gap", len(seen_cohort)
 
 
 def _analyze_city(target_city, all_rows, pre_alerts_by_date, watermark_dt):

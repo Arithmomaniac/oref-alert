@@ -51,7 +51,7 @@ export function createState(opts) {
     currentRecord: null,
     cohortCities: new Set(),
     sirenCohortCities: new Set(),
-    sirenCohortStableSince: null,
+    firstCohortSirenMs: null,
     lastRtKeys: new Set(),
     eventLog: [],
     stableThresholdMs: opts.stableThresholdMs != null ? opts.stableThresholdMs : null,
@@ -140,8 +140,8 @@ export function getColor(rec, es, nowMs) {
   if (rec.type === ALERT) return "red";
   if (rec.type === PRE_ALERT) {
     if (es.stableThresholdMs !== null &&
-        es.sirenCohortCities.size > 0 && es.sirenCohortStableSince !== null &&
-        (nowMs - es.sirenCohortStableSince) >= es.stableThresholdMs) {
+        es.sirenCohortCities.size > 0 && es.firstCohortSirenMs !== null &&
+        (nowMs - es.firstCohortSirenMs) >= es.stableThresholdMs) {
       return "yellow_orange";
     }
     return "yellow";
@@ -160,7 +160,7 @@ export function removeExpired(es, nowMs) {
     es.currentRecord = makeRecord(END, HIST_END_CATEGORY, "פג תוקף", Math.floor(nowMs / 1000));
     es.cohortCities = new Set();
     es.sirenCohortCities = new Set();
-    es.sirenCohortStableSince = null;
+    es.firstCohortSirenMs = null;
     return { dotColor: "green", title: "פג תוקף התראה", source: "SYS", causedChange: true };
   }
   return null;
@@ -225,14 +225,14 @@ export function processState(state, es, city, nowMs) {
         if (!setsEqual(newCohort, es.cohortCities)) {
           es.cohortCities = newCohort;
           es.sirenCohortCities = new Set();
-          es.sirenCohortStableSince = null;
+          es.firstCohortSirenMs = null;
         }
       }
       // Clear cohort when leaving PRE_ALERT
       if (cl.type !== PRE_ALERT && changed) {
         es.cohortCities = new Set();
         es.sirenCohortCities = new Set();
-        es.sirenCohortStableSince = null;
+        es.firstCohortSirenMs = null;
       }
 
       var evColor = getColor(rec, es, nowMs) === "green" ? "green" : getColor(rec, es, nowMs) === "red" ? "red" : "yellow";
@@ -254,7 +254,9 @@ export function processState(state, es, city, nowMs) {
         for (var d2 = 0; d2 < data2.length; d2++) {
           if (es.cohortCities.has(data2[d2]) && !es.sirenCohortCities.has(data2[d2])) {
             es.sirenCohortCities.add(data2[d2]);
-            es.sirenCohortStableSince = nowMs;
+            if (es.firstCohortSirenMs === null) {
+              es.firstCohortSirenMs = nowMs;
+            }
           }
         }
       }
@@ -314,9 +316,11 @@ export function processState(state, es, city, nowMs) {
             var sCity = sh.data || "";
             if (es.cohortCities.has(sCity) && !es.sirenCohortCities.has(sCity)) {
               es.sirenCohortCities.add(sCity);
-              // Use the siren's alertDate as the stable-since time
+              // Use the earliest siren's alertDate as the first-siren anchor
               var sirenTime = sh.alertDate ? parseAlertDate(sh.alertDate).getTime() : nowMs;
-              es.sirenCohortStableSince = sirenTime;
+              if (es.firstCohortSirenMs === null || sirenTime < es.firstCohortSirenMs) {
+                es.firstCohortSirenMs = sirenTime;
+              }
             }
           }
         }

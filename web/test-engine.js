@@ -163,9 +163,9 @@ console.log("\n4. Siren for our city → red");
   assertColor(r1, "red", "siren for our city → red");
 }
 
-// ── Test 5: Cohort siren trickle resets timer ──
+// ── Test 5: Cohort siren trickle does NOT reset timer (first-siren anchor) ──
 
-console.log("\n5. Cohort siren trickle resets timer");
+console.log("\n5. Cohort siren trickle does NOT reset timer (first-siren)");
 {
   var es = engine.createState({ stableThresholdMs: 240000 });
   var now = tMs("09:00:40");
@@ -185,7 +185,7 @@ console.log("\n5. Cohort siren trickle resets timer");
     { cat: "1", title: "ירי רקטות וטילים", data: COHORT },
   ]);
   engine.processState(state2, es, CITY, now);
-  var stableSince1 = es.sirenCohortStableSince;
+  var firstSiren1 = es.firstCohortSirenMs;
 
   // New cohort city siren trickles in 30s later
   now += 30000;
@@ -196,13 +196,13 @@ console.log("\n5. Cohort siren trickle resets timer");
     { cat: "1", title: "ירי רקטות וטילים", data: ["כרמיאל"] },
   ]);
   engine.processState(state3, es, CITY, now);
-  assert(es.sirenCohortStableSince > stableSince1, "timer reset when new cohort city detected");
+  assert(es.firstCohortSirenMs === firstSiren1, "timer NOT reset when new cohort city detected (first-siren anchor)");
   assert(es.sirenCohortCities.size === 4, "4 cohort cities now tracked");
 
-  // 240s after the TRICKLE (not the first batch) → amber
-  now += 240000;
+  // 240s after the FIRST batch (not the trickle) → amber
+  now = firstSiren1 + 240000;
   var r4 = engine.processState(state3, es, CITY, now);
-  assertColor(r4, "yellow_orange", "240s after last trickle → amber");
+  assertColor(r4, "yellow_orange", "240s after first siren → amber");
 }
 
 // ── Test 6: PRE_ALERT expiry ──
