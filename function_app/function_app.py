@@ -18,7 +18,6 @@ import json
 import logging
 import os
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import azure.functions as func
@@ -219,28 +218,10 @@ class _ComputeLock:
 @app.function_name("register_city")
 @app.route(route="register", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def register_city(req: func.HttpRequest) -> func.HttpResponse:
-    """City registration heartbeat — records which cities are active."""
-    city = req.params.get("city")
-    if not city:
-        return func.HttpResponse("Missing 'city' query parameter", status_code=400)
-
-    container = _get_container_client()
-    blob_path = "api/active_cities.json"
-
-    cities = _read_json_blob(container, blob_path, default={})
-    now = datetime.now(timezone.utc)
-    cities[city] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    cutoff = now - timedelta(days=7)
-    cities = {
-        c: ts for c, ts in cities.items()
-        if datetime.fromisoformat(ts.replace("Z", "+00:00")) > cutoff
-    }
-
-    _write_json_blob(container, blob_path, cities)
-
+    """Legacy registration endpoint — now a no-op since all cities are precomputed."""
+    city = req.params.get("city", "")
     return func.HttpResponse(
-        json.dumps({"ok": True, "city": city}, ensure_ascii=False),
+        json.dumps({"ok": True, "city": city, "status": "all_cities_precomputed"}, ensure_ascii=False),
         status_code=200,
         mimetype="application/json",
         headers={"Access-Control-Allow-Origin": "*"},
@@ -250,107 +231,23 @@ def register_city(req: func.HttpRequest) -> func.HttpResponse:
 @app.function_name("compute_city")
 @app.route(route="compute", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def compute_city(req: func.HttpRequest) -> func.HttpResponse:
-    """On-demand threshold computation for a single city."""
-    city = req.params.get("city")
-    if not city:
-        return func.HttpResponse("Missing 'city' query parameter", status_code=400)
-
+    """Legacy on-demand compute endpoint — now returns precomputed threshold."""
+    city = req.params.get("city", "")
     container = _get_container_client()
-
-    # Check if city already has a threshold
     thresholds = _read_json_blob(container, "api/thresholds.json", default={})
-    if thresholds.get("cities", {}).get(city):
+    city_data = thresholds.get("cities", {}).get(city)
+    if city_data:
         return func.HttpResponse(
-            json.dumps({"ok": True, "city": city, "status": "already_computed",
-                        "threshold": thresholds["cities"][city]}, ensure_ascii=False),
+            json.dumps({"ok": True, "city": city, "status": "precomputed",
+                        "threshold": city_data}, ensure_ascii=False),
             status_code=200, mimetype="application/json",
             headers={"Access-Control-Allow-Origin": "*"},
         )
-
-    logging.info("On-demand compute for city: %s", city)
-
-    try:
-        with _ComputeLock(container):
-            # Re-read inside lock to avoid TOCTOU race
-            thresholds = _read_json_blob(container, "api/thresholds.json", default={})
-            if thresholds.get("cities", {}).get(city):
-                return func.HttpResponse(
-                    json.dumps({"ok": True, "city": city, "status": "already_computed",
-                                "threshold": thresholds["cities"][city]}, ensure_ascii=False),
-                    status_code=200, mimetype="application/json",
-                    headers={"Access-Control-Allow-Origin": "*"},
-                )
-
-            gap_data = _read_json_blob(
-                container, "api/gap_data.json",
-                default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
-            )
-
-            # Download CSV (incremental if possible)
-            byte_offset = gap_data.get("csv_byte_offset", 0)
-            req_headers = {}
-            if byte_offset > 0:
-                req_headers["Range"] = f"bytes={byte_offset}-"
-
-            resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=req_headers)
-            resp.raise_for_status()
-            raw_bytes = resp.content
-
-            if byte_offset > 0 and resp.status_code == 206:
-                csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
-                new_total_bytes = byte_offset + len(raw_bytes)
-            else:
-                csv_text = raw_bytes.decode("utf-8")
-                new_total_bytes = len(raw_bytes)
-
-            now = datetime.now(timezone.utc)
-            cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
-            all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
-
-            # For a new city we need to scan all data (watermark doesn't apply)
-            new_events = _analyze_city(city, all_rows, pre_alerts_by_date, watermark_dt=None)
-
-            # Update gap_data for this city
-            gap_data["cities"][city] = new_events
-            gap_data["csv_byte_offset"] = new_total_bytes
-            if all_rows:
-                latest_dt = max(dt for dt, *_ in all_rows)
-                gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
-
-            # Compute threshold
-            stable_sec, event_count, fn_rate = _compute_threshold(new_events)
-            city_threshold = {
-                "stable_seconds": stable_sec,
-                "events": event_count,
-                "fn_rate": round(fn_rate, 4),
-            }
-
-            # Update thresholds.json
-            if "cities" not in thresholds:
-                thresholds["cities"] = {}
-            thresholds["cities"][city] = city_threshold
-            thresholds["updated"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-            _write_json_blob(container, "api/gap_data.json", gap_data)
-            _write_json_blob(container, "api/thresholds.json", thresholds)
-            logging.info("Computed threshold for %s: %ds (%d events, %.1f%% FN)",
-                         city, stable_sec, event_count, fn_rate * 100)
-
-        return func.HttpResponse(
-            json.dumps({"ok": True, "city": city, "status": "computed",
-                        "threshold": city_threshold}, ensure_ascii=False),
-            status_code=200, mimetype="application/json",
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-    except Exception as exc:
-        if "LeaseAlreadyPresent" in str(exc):
-            return func.HttpResponse(
-                json.dumps({"ok": True, "city": city, "status": "computing_elsewhere"},
-                           ensure_ascii=False),
-                status_code=202, mimetype="application/json",
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
-        raise
+    return func.HttpResponse(
+        json.dumps({"ok": True, "city": city, "status": "not_found"}, ensure_ascii=False),
+        status_code=200, mimetype="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +261,7 @@ EVENT_WINDOW_MIN = 20
 CSV_URL = "https://raw.githubusercontent.com/dleshem/israel-alerts-data/refs/heads/main/israel-alerts.csv"
 CITIES_MIX_URL = "https://alerts-history.oref.org.il/Shared/Ajax/GetCitiesMix.aspx"
 
-# These cities always get thresholds computed, regardless of registration
-ALWAYS_ACTIVE_CITIES = ["כרמיאל", "בית שמש", "חריש"]
+MIN_EVENTS_FOR_THRESHOLD = 5
 
 
 def _parse_date_time(date_str: str, time_str: str) -> datetime:
@@ -468,48 +364,88 @@ def _compute_gap(target_city, cohort_cities, sirens):
     return gap, "hit_after_gap", len(seen_cohort)
 
 
-def _analyze_city(target_city, all_rows, pre_alerts_by_date, watermark_dt):
-    """Run gap analysis for every pre-alert event for a single city.
+def _analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt):
+    """Run gap analysis for ALL cities across all pre-alert events in a single pass.
 
-    Returns list of {"outcome": str, "gap": float|None, "alert_date": str}.
+    For each pre-alert event, finds first siren time for each city in a single
+    pass, then computes gaps for all cities simultaneously.
+
+    Returns dict[city_name, list[event_dict]].
     """
-    events = []
-    for alert_date_str, cities_in_blast in sorted(pre_alerts_by_date.items()):
-        if not any(_city_matches(c, target_city) for c in cities_in_blast):
-            continue
+    city_events = defaultdict(list)
 
-        # Find per-second timestamp for this pre-alert
+    for alert_date_str, cities_in_blast in sorted(pre_alerts_by_date.items()):
+        if len(cities_in_blast) < 2:
+            continue  # need at least 2 cities for cohort analysis
+
+        # Find per-second timestamp for this pre-alert (use any city)
         pre_alert_dt = None
         for dt, cat, areas, ad in all_rows:
             if ad == alert_date_str and cat == PRE_ALERT_CATEGORY:
-                if any(_city_matches(a, target_city) for a in areas):
-                    pre_alert_dt = dt
-                    break
+                pre_alert_dt = dt
+                break
         if pre_alert_dt is None:
             pre_alert_dt = datetime.fromisoformat(alert_date_str)
 
         if watermark_dt and pre_alert_dt <= watermark_dt:
             continue
 
-        cohort_cities = {
-            c for c in cities_in_blast if not _city_matches(c, target_city)
-        }
-        window_end = _find_end_time(all_rows, target_city, pre_alert_dt)
-        sirens = _find_sirens_in_window(all_rows, pre_alert_dt, window_end)
-        gap, outcome, cohort_sirens = _compute_gap(target_city, cohort_cities, sirens)
+        window_end = pre_alert_dt + timedelta(minutes=EVENT_WINDOW_MIN)
 
-        events.append({
-            "outcome": outcome,
-            "gap": gap,
-            "alert_date": alert_date_str,
-            "cohort_size": len(cohort_cities),
-            "cohort_sirens": cohort_sirens,
-        })
-    return events
+        # Single pass: find first siren time for each blast city
+        city_first_siren = {}
+        blast_list = list(cities_in_blast)
+
+        for dt, cat, areas, _ad in all_rows:
+            if dt < pre_alert_dt:
+                continue
+            if dt >= window_end:
+                break
+            if cat not in HIST_ALERT_CATEGORIES:
+                continue
+            for area in areas:
+                area_s = area.strip()
+                for blast_city in blast_list:
+                    if blast_city in area_s and blast_city not in city_first_siren:
+                        city_first_siren[blast_city] = dt
+
+        # Compute gap for each city using precomputed first-siren times
+        for target_city in blast_list:
+            target_siren = city_first_siren.get(target_city)
+            cohort_with_sirens = 0
+            first_cohort_siren = None
+
+            for c in blast_list:
+                if c == target_city:
+                    continue
+                ct = city_first_siren.get(c)
+                if ct is not None:
+                    cohort_with_sirens += 1
+                    if target_siren is None or ct < target_siren:
+                        if first_cohort_siren is None or ct < first_cohort_siren:
+                            first_cohort_siren = ct
+
+            if target_siren is None:
+                outcome, gap = "miss", None
+            elif first_cohort_siren is None:
+                outcome, gap = "immediate", 0
+            else:
+                gap = (target_siren - first_cohort_siren).total_seconds()
+                outcome = "hit_after_gap" if gap > 0 else "immediate"
+
+            city_events[target_city].append({
+                "outcome": outcome,
+                "gap": gap,
+                "alert_date": alert_date_str,
+                "cohort_size": len(blast_list) - 1,
+                "cohort_sirens": cohort_with_sirens,
+            })
+
+    return dict(city_events)
 
 
 def _compute_threshold(events, target_fn_rate=0.05):
-    """Find the lowest threshold (30s increments, 30-600s) where FN rate ≤ target.
+    """Find the lowest threshold (30s increments, 30-1200s) where FN rate ≤ target.
 
     FN = outcome is hit_after_gap with gap > threshold.
     FN rate = FN / (misses_with_sirens + FN).
@@ -523,7 +459,7 @@ def _compute_threshold(events, target_fn_rate=0.05):
         if e["outcome"] == "miss" and e.get("cohort_sirens", 0) > 0
     )
 
-    for threshold in range(30, 601, 30):
+    for threshold in range(30, 1201, 30):
         fn = sum(
             1 for e in events
             if e["outcome"] == "hit_after_gap" and e["gap"] is not None and e["gap"] > threshold
@@ -533,22 +469,14 @@ def _compute_threshold(events, target_fn_rate=0.05):
         if fn_rate <= target_fn_rate:
             return threshold, len(events), fn_rate
 
-    return 600, len(events), 0.0
+    return 1200, len(events), 0.0
 
 
 @app.function_name("compute_thresholds")
 @app.timer_trigger(schedule="0 0 3 * * *", arg_name="timer", run_on_startup=False)
 def compute_thresholds(timer: func.TimerRequest) -> None:
-    """Daily job: compute per-city alert gap thresholds from historical data."""
+    """Daily job: compute per-city alert gap thresholds for ALL cities."""
     container = _get_container_client()
-
-    active_cities = _read_json_blob(container, "api/active_cities.json", default={})
-
-    # Always-active cities are included even if no one has registered them
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for c in ALWAYS_ACTIVE_CITIES:
-        if c not in active_cities:
-            active_cities[c] = now_str
 
     with _ComputeLock(container):
         gap_data = _read_json_blob(
@@ -588,21 +516,16 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
         if gap_data.get("watermark"):
             watermark_dt = datetime.fromisoformat(gap_data["watermark"])
 
-        city_names = list(active_cities.keys())
-
-        def _process_city(city_name):
-            new_events = _analyze_city(city_name, all_rows, pre_alerts_by_date, watermark_dt)
-            return city_name, new_events
-
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(_process_city, c): c for c in city_names}
-
-        for future in futures:
-            city_name, new_events = future.result()
+        # Single-pass analysis for ALL cities
+        new_city_events = _analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt)
+        for city_name, new_events in new_city_events.items():
             existing = gap_data["cities"].get(city_name, [])
             existing.extend(new_events)
             gap_data["cities"][city_name] = existing
-            logging.info("City %s: %d new events (total %d)", city_name, len(new_events), len(existing))
+
+        logging.info("Analyzed %d cities (%d new events total)",
+                     len(new_city_events),
+                     sum(len(v) for v in new_city_events.values()))
 
         # Update watermark and byte offset for next incremental download
         if all_rows:
@@ -619,8 +542,9 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
             "cities": {},
         }
 
-        for city_name in gap_data["cities"]:
-            events = gap_data["cities"][city_name]
+        for city_name, events in gap_data["cities"].items():
+            if len(events) < MIN_EVENTS_FOR_THRESHOLD:
+                continue
             stable_sec, event_count, fn_rate = _compute_threshold(events, target_fn_rate)
             thresholds["cities"][city_name] = {
                 "stable_seconds": stable_sec,

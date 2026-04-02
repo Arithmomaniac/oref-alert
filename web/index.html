@@ -352,7 +352,6 @@ import * as engine from "./alert-engine.js";
   var sessionExpired = false;
   var lastThresholdFetch = 0;
   var knownCities = null;
-  var thresholdPollTimer = null;
 
   // ── Parse city from query string ───────────────────────────
   function getCity() {
@@ -396,24 +395,6 @@ import * as engine from "./alert-engine.js";
         lastThresholdFetch = Date.now();
       })
       .catch(function() { /* ignore */ });
-  }
-
-  function registerCity() {
-    fetch(FUNC_API + "/register?city=" + encodeURIComponent(city)).catch(function() {});
-    // If we don't have a threshold yet, trigger on-demand computation
-    if (es.stableThresholdMs === null && getMissedUsOverride() === null) {
-      fetch(FUNC_API + "/compute?city=" + encodeURIComponent(city)).catch(function() {});
-      // Poll thresholds.json every 30s until our city appears
-      if (!thresholdPollTimer) {
-        thresholdPollTimer = setInterval(function() {
-          fetchThresholds();
-          if (es.stableThresholdMs !== null) {
-            clearInterval(thresholdPollTimer);
-            thresholdPollTimer = null;
-          }
-        }, 30000);
-      }
-    }
   }
 
   // ── Event log rendering ─────────────────────────────────────
@@ -696,10 +677,8 @@ import * as engine from "./alert-engine.js";
       })
       .catch(function() {});
 
-    // Fetch thresholds and register city
+    // Fetch thresholds (precomputed for all cities)
     fetchThresholds();
-    registerCity();
-    setInterval(registerCity, 24 * 60 * 60 * 1000);
 
     // Initial color
     applyColor("green");
