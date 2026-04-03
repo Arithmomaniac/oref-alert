@@ -797,8 +797,9 @@ import * as engine from "./alert-engine.js";
       return;
     }
 
-    // Show city label
+    // Show city label + update tab title
     elCityLabel.textContent = city;
+    document.title = city + " \u2013 \u05D4\u05EA\u05E8\u05D0\u05D5\u05EA \u05E4\u05D9\u05E7\u05D5\u05D3 \u05D4\u05E2\u05D5\u05E8\u05E3";
 
     // Validate city against known list and show warning if invalid
     fetch("/api/cities.json")
