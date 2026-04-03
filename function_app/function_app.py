@@ -260,6 +260,7 @@ PRE_ALERT_CATEGORY = 14
 EVENT_WINDOW_MIN = 20
 CSV_URL = "https://raw.githubusercontent.com/dleshem/israel-alerts-data/refs/heads/main/israel-alerts.csv"
 CITIES_MIX_URL = "https://alerts-history.oref.org.il/Shared/Ajax/GetCitiesMix.aspx"
+ELADNAVA_CITIES_URL = "https://raw.githubusercontent.com/eladnava/redalert-android/master/app/src/main/res/raw/cities.json"
 
 MIN_EVENTS_FOR_THRESHOLD = 5
 
@@ -433,12 +434,17 @@ def _analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt):
                 gap = (target_siren - first_cohort_siren).total_seconds()
                 outcome = "hit_after_gap" if gap > 0 else "immediate"
 
+            pre_alert_to_siren = None
+            if target_siren is not None:
+                pre_alert_to_siren = (target_siren - pre_alert_dt).total_seconds()
+
             city_events[target_city].append({
                 "outcome": outcome,
                 "gap": gap,
                 "alert_date": alert_date_str,
                 "cohort_size": len(blast_list) - 1,
                 "cohort_sirens": cohort_with_sirens,
+                "pre_alert_to_siren": pre_alert_to_siren,
             })
 
     return dict(city_events)
@@ -470,6 +476,34 @@ def _compute_threshold(events, target_fn_rate=0.05):
             return threshold, len(events), fn_rate
 
     return 1200, len(events), 0.0
+
+
+def _compute_siren_timing_stats(events):
+    """Compute summary statistics for pre-alert → target city siren times.
+
+    Returns dict with earliest/median/p25/p75 in seconds, or None if no data.
+    """
+    values = sorted(
+        e["pre_alert_to_siren"]
+        for e in events
+        if e.get("pre_alert_to_siren") is not None
+    )
+    if not values:
+        return None
+
+    n = len(values)
+    if n % 2 == 1:
+        median = values[n // 2]
+    else:
+        median = (values[n // 2 - 1] + values[n // 2]) / 2
+
+    return {
+        "earliest_siren_seconds": round(values[0], 1),
+        "median_siren_seconds": round(median, 1),
+        "p25_siren_seconds": round(values[max(0, n // 4)], 1),
+        "p75_siren_seconds": round(values[min(n - 1, 3 * n // 4)], 1),
+        "siren_timing_count": n,
+    }
 
 
 @app.function_name("compute_thresholds")
@@ -546,11 +580,15 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
             if len(events) < MIN_EVENTS_FOR_THRESHOLD:
                 continue
             stable_sec, event_count, fn_rate = _compute_threshold(events, target_fn_rate)
-            thresholds["cities"][city_name] = {
+            city_thresh = {
                 "stable_seconds": stable_sec,
                 "events": event_count,
                 "fn_rate": round(fn_rate, 4),
             }
+            timing = _compute_siren_timing_stats(events)
+            if timing:
+                city_thresh.update(timing)
+            thresholds["cities"][city_name] = city_thresh
 
         _write_json_blob(container, "api/gap_data.json", gap_data)
         _write_json_blob(container, "api/thresholds.json", thresholds)
@@ -565,4 +603,29 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
         _write_json_blob(container, "api/cities.json", labels)
         logging.info("Refreshed cities.json: %d cities", len(labels))
     except Exception:
+        labels = None
         logging.exception("Failed to refresh cities.json — keeping previous version")
+
+    # Generate cities-geo.json (name → lat/lng) for browser geolocation → city lookup.
+    # Only include cities whose names exactly match the canonical oref city list to avoid
+    # mismatches (eladnava uses different apostrophe chars, etc.).
+    if labels is not None:
+        try:
+            resp = httpx.get(ELADNAVA_CITIES_URL, timeout=30.0)
+            resp.raise_for_status()
+            geo_cities = resp.json()
+            oref_set = set(labels)
+            geo_list = []
+            for c in geo_cities:
+                name = c.get("name", "").strip()
+                lat = c.get("lat")
+                lng = c.get("lng")
+                if name and lat and lng and name in oref_set:
+                    geo_list.append({"name": name, "lat": lat, "lng": lng})
+            _write_json_blob(container, "api/cities-geo.json", geo_list)
+            logging.info(
+                "Refreshed cities-geo.json: %d/%d cities with coordinates",
+                len(geo_list), len(labels),
+            )
+        except Exception:
+            logging.exception("Failed to refresh cities-geo.json — keeping previous version")
