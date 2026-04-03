@@ -182,7 +182,7 @@ def _write_json_blob(container_client, blob_path, data, cache_control="no-cache"
 
 
 LOCK_BLOB = "api/_compute.lock"
-LOCK_LEASE_SECONDS = 300  # 5 min max hold
+LOCK_LEASE_SECONDS = -1  # infinite lease; released explicitly in __exit__
 
 
 class _ComputeLock:
