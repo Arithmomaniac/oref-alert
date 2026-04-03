@@ -28,7 +28,16 @@ function startMockServer(fixtureFile) {
     default_stable_seconds: 300,
     target_fn_rate: 0.05,
     cities: {
-      [CITY]: { stable_seconds: isAmberFixture ? 0 : 240, events: 100, fn_rate: 0.0 },
+      [CITY]: {
+        stable_seconds: isAmberFixture ? 0 : 240,
+        events: 100,
+        fn_rate: 0.0,
+        earliest_siren_seconds: 180,
+        median_siren_seconds: 360,
+        p25_siren_seconds: 210,
+        p75_siren_seconds: 480,
+        siren_timing_count: 80,
+      },
     },
   });
 
@@ -151,4 +160,92 @@ test.describe("Alert display color states", () => {
       }
     });
   }
+});
+
+test.describe("Pre-alert 'as soon as' info", () => {
+  /** @type {{ server: http.Server, port: number, url: string }} */
+  let mock;
+
+  test("should show 'as soon as' siren timing on pre-alert (yellow/orange) page", async ({ page }) => {
+    mock = await startMockServer("state-yellow.json");
+
+    try {
+      await page.route("**/orefalert-func.azurewebsites.net/**", (route) =>
+        route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' })
+      );
+
+      await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
+      await page.waitForTimeout(7000);
+
+      // Verify background is yellow (pre-alert)
+      const bg = await page.evaluate(() =>
+        window.getComputedStyle(document.body).backgroundColor
+      );
+      expect(bg).toBe(EXPECTED.yellow.bg);
+
+      // Verify the pre-alert-info element is visible and contains "as soon as" data
+      const preAlertInfo = page.locator("#pre-alert-info");
+      await expect(preAlertInfo).toBeVisible();
+
+      // Should contain the Hebrew text for "historically, sirens arrive..."
+      const text = await preAlertInfo.textContent();
+      expect(text).toContain("היסטורית");
+      expect(text).toContain(CITY);
+      // Should contain a time estimate (≈HH:MM)
+      expect(text).toMatch(/≈\d{2}:\d{2}/);
+
+      await page.screenshot({
+        path: path.join(__dirname, "baseline-yellow-asap.png"),
+        fullPage: true,
+      });
+    } finally {
+      mock.server.close();
+    }
+  });
+
+  test("should NOT show 'as soon as' info on green page", async ({ page }) => {
+    mock = await startMockServer("state-green.json");
+
+    try {
+      await page.route("**/orefalert-func.azurewebsites.net/**", (route) =>
+        route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' })
+      );
+
+      await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
+      await page.waitForTimeout(7000);
+
+      const preAlertInfo = page.locator("#pre-alert-info");
+      await expect(preAlertInfo).toBeHidden();
+    } finally {
+      mock.server.close();
+    }
+  });
+
+  test("should NOT show 'as soon as' info on amber page", async ({ page }) => {
+    mock = await startMockServer("state-amber.json");
+
+    try {
+      await page.route("**/orefalert-func.azurewebsites.net/**", (route) =>
+        route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' })
+      );
+
+      await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
+      await page.waitForTimeout(13000);
+
+      // Should be amber
+      const bg = await page.evaluate(() =>
+        window.getComputedStyle(document.body).backgroundColor
+      );
+      expect(bg).toBe(EXPECTED.amber.bg);
+
+      // pre-alert-info should be hidden; missed-us-info should be visible instead
+      const preAlertInfo = page.locator("#pre-alert-info");
+      await expect(preAlertInfo).toBeHidden();
+
+      const missedUsInfo = page.locator("#missed-us-info");
+      await expect(missedUsInfo).toBeVisible();
+    } finally {
+      mock.server.close();
+    }
+  });
 });

@@ -85,6 +85,12 @@
     <div class="chart-box wide"><canvas id="histAll"></canvas></div>
   </div>
 
+  <h2>Pre-Alert to Siren Distribution (30s bins)</h2>
+  <div class="summary" id="siren-timing-cards"></div>
+  <div class="chart-row">
+    <div class="chart-box wide"><canvas id="preAlertHist"></canvas></div>
+  </div>
+
   <h2>False &ldquo;Missed Us&rdquo; Rate vs. Threshold</h2>
   <div id="insight-box" class="insight"></div>
   <div class="chart-row">
@@ -231,6 +237,7 @@
   function computeStats(cityName) {
     var events = gapData.cities[cityName];
     var miss = 0, missWithSirens = 0, immediate = 0, gapIntervals = [];
+    var preAlertToSiren = [];
     events.forEach(function(e) {
       if (e.outcome === "miss") {
         miss++;
@@ -240,8 +247,12 @@
       } else if (e.outcome === "hit_after_gap") {
         gapIntervals.push(e.gap);
       }
+      if (e.pre_alert_to_siren != null) {
+        preAlertToSiren.push(e.pre_alert_to_siren);
+      }
     });
     gapIntervals.sort(function(a, b) { return a - b; });
+    preAlertToSiren.sort(function(a, b) { return a - b; });
 
     var maxThresh = 1200;
     var thresholdValues = [];
@@ -258,11 +269,33 @@
       histBins[b] = (histBins[b] || 0) + 1;
     });
 
+    var preAlertHistBins = {};
+    preAlertToSiren.forEach(function(iv) {
+      var b = Math.floor(iv / 30) * 30;
+      preAlertHistBins[b] = (preAlertHistBins[b] || 0) + 1;
+    });
+
+    var paSirenStats = null;
+    if (preAlertToSiren.length > 0) {
+      var n = preAlertToSiren.length;
+      var median = n % 2 === 1 ? preAlertToSiren[Math.floor(n / 2)]
+        : (preAlertToSiren[Math.floor(n / 2) - 1] + preAlertToSiren[Math.floor(n / 2)]) / 2;
+      paSirenStats = {
+        min: preAlertToSiren[0],
+        median: median,
+        p25: preAlertToSiren[Math.max(0, Math.floor(n / 4))],
+        p75: preAlertToSiren[Math.min(n - 1, Math.floor(3 * n / 4))],
+        count: n
+      };
+    }
+
     return {
       miss: miss, missWithSirens: missWithSirens, immediate: immediate,
       gapCount: gapIntervals.length, total: events.length,
       gapIntervals: gapIntervals, fnRates: fnRates,
-      thresholdValues: thresholdValues, histBins: histBins
+      thresholdValues: thresholdValues, histBins: histBins,
+      preAlertToSiren: preAlertToSiren, preAlertHistBins: preAlertHistBins,
+      paSirenStats: paSirenStats
     };
   }
 
@@ -355,6 +388,56 @@
         scales: { y: { title: { display: true, text: "Count" } } }
       }
     });
+
+    // Pre-alert to first siren histogram
+    var allPaTimes = [];
+    selected.forEach(function(c) { allPaTimes = allPaTimes.concat(stats[c].preAlertToSiren); });
+    var maxPa = allPaTimes.length > 0 ? Math.max.apply(null, allPaTimes) : 0;
+    var paBins = [];
+    for (var pb = 0; pb <= maxPa + 30; pb += 30) paBins.push(pb);
+    var paBinLabels = paBins.map(fmtThresh);
+
+    // Siren timing stat cards
+    var timingHtml = "";
+    selected.forEach(function(c, i) {
+      var pa = stats[c].paSirenStats;
+      if (pa) {
+        timingHtml += '<div class="stat-card" style="border-top:3px solid ' + colors[i] + '">' +
+          '<div class="label" style="margin-bottom:4px">' + c + '</div>' +
+          '<div style="font-size:13px">' +
+            '<strong>Earliest:</strong> ' + fmtThresh(Math.round(pa.min)) + ' &nbsp; ' +
+            '<strong>Median:</strong> ' + fmtThresh(Math.round(pa.median)) + '<br>' +
+            '<strong>P25:</strong> ' + fmtThresh(Math.round(pa.p25)) + ' &nbsp; ' +
+            '<strong>P75:</strong> ' + fmtThresh(Math.round(pa.p75)) + '<br>' +
+            '<span style="color:#999">' + pa.count + ' events where city got a siren</span>' +
+          '</div></div>';
+      }
+    });
+    document.getElementById("siren-timing-cards").innerHTML = timingHtml ||
+      '<p style="color:#999">No pre-alert-to-siren timing data available.</p>';
+
+    if (allPaTimes.length > 0) {
+      charts.preAlertHist = new Chart(document.getElementById("preAlertHist"), {
+        type: "bar",
+        data: {
+          labels: paBinLabels,
+          datasets: selected.map(function(c, i) {
+            return {
+              label: c,
+              data: paBins.map(function(b) { return stats[c].preAlertHistBins[b] || 0; }),
+              backgroundColor: colors[i] + "CC",
+              borderColor: colors[i],
+              borderWidth: 1
+            };
+          })
+        },
+        options: {
+          plugins: { title: { display: true, text: "Pre-Alert to Siren (30s bins)" } },
+          scales: { y: { title: { display: true, text: "Count" } },
+                    x: { title: { display: true, text: "Seconds after pre-alert" } } }
+        }
+      });
+    }
 
     // FN rate chart
     var threshLabels = stats[selected[0]].thresholdValues.map(fmtThresh);

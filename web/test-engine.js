@@ -275,6 +275,52 @@ console.log("\n8. History PRE_ALERT with no cohort sirens → yellow (no false a
   assert(es.sirenCohortCities.size === 0, "sirenCohortCities empty (no sirens in history)");
 }
 
+// ── Test 9: Thresholds data with earliest_siren_seconds accessible in engine state ──
+
+console.log("\n9. Thresholds data with siren timing stats accessible on pre-alert");
+{
+  var thresholdsData = {
+    updated: "2026-04-01T03:00:00Z",
+    default_stable_seconds: 300,
+    target_fn_rate: 0.05,
+    cities: {
+      [CITY]: {
+        stable_seconds: 240,
+        events: 42,
+        fn_rate: 0.023,
+        earliest_siren_seconds: 180,
+        median_siren_seconds: 360,
+        p25_siren_seconds: 210,
+        p75_siren_seconds: 480,
+        siren_timing_count: 35,
+      },
+    },
+  };
+  var es = engine.createState({ stableThresholdMs: 240000, thresholdsData: thresholdsData });
+  var now = tMs("09:00:40");
+
+  // PRE_ALERT arrives
+  var state1 = makeStateJson([
+    { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: [CITY, ...COHORT] },
+  ]);
+  var r1 = engine.processState(state1, es, CITY, now);
+  assertColor(r1, "yellow", "PRE_ALERT → yellow with thresholds data");
+
+  // Verify thresholds data is accessible
+  var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[CITY];
+  assert(ci != null, "thresholdsData.cities has our city");
+  assert(ci.earliest_siren_seconds === 180, "earliest_siren_seconds is 180");
+  assert(ci.median_siren_seconds === 360, "median_siren_seconds is 360");
+
+  // Verify the "as soon as" time can be computed
+  assert(es.currentRecord != null, "currentRecord is set");
+  assert(es.currentRecord.time != null, "currentRecord.time is set");
+  var expectedTimeMs = es.currentRecord.time * 1000 + ci.earliest_siren_seconds * 1000;
+  var expectedDate = new Date(expectedTimeMs);
+  assert(!isNaN(expectedDate.getTime()), "as-soon-as time computes to valid date");
+}
+
 // ── Summary ──
 
 console.log("\n" + "═".repeat(40));

@@ -203,6 +203,16 @@ body {
   font-size: 0.9em;
   margin-top: 0.3em;
 }
+/* --- Pre-alert "as soon as" info --- */
+#pre-alert-info {
+  display: none;
+  font-size: clamp(0.6rem, 1.4vmin, 1.8vw);
+  opacity: 0.8;
+  margin-top: 0.5em;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  max-width: min(600px, 80vw);
+  line-height: 1.5;
+}
 
 /* --- City input bar --- */
 #city-form {
@@ -269,6 +279,28 @@ body {
 }
 #city-go:hover { background: rgba(255,255,255,0.5); }
 
+/* --- Location button --- */
+#locate-btn {
+  display: none;
+  margin-top: 1.2em;
+  padding: 0.5em 1.2em;
+  border: 2px solid rgba(255,255,255,0.5);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+  font-size: clamp(0.9rem, 2.2vmin, 2.5vw);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#locate-btn:hover { background: rgba(255,255,255,0.25); }
+#locate-btn:disabled { opacity: 0.5; cursor: wait; }
+#locate-error {
+  display: none;
+  color: #ffab00;
+  margin-top: 0.5em;
+  font-size: clamp(0.75rem, 1.8vmin, 2vw);
+}
+
 /* --- Invalid city banner --- */
 #invalid-city {
   display: none;
@@ -294,6 +326,7 @@ body {
 <div id="center">
   <div id="status-text"></div>
   <div id="missed-us-info"></div>
+  <div id="pre-alert-info"></div>
   <div id="clock"><span id="clock-main"></span><span id="clock-seconds"></span></div>
 </div>
 
@@ -310,6 +343,8 @@ body {
     <button id="city-go" type="submit">&#x25B6;</button>
   </form>
   <div id="city-error">עיר לא נמצאה במערכת</div>
+  <button id="locate-btn" type="button">📍 השתמש במיקום שלי</button>
+  <div id="locate-error"></div>
   <p dir="ltr" style="direction:ltr; margin-top:1em; opacity:0.6">or add <code>?city=YourCity</code> to the URL</p>
 </div>
 
@@ -335,6 +370,7 @@ import * as engine from "./alert-engine.js";
   var elCenter = document.getElementById("center");
   var elStatus = document.getElementById("status-text");
   var elMissedUsInfo = document.getElementById("missed-us-info");
+  var elPreAlertInfo = document.getElementById("pre-alert-info");
   var elClockMain = document.getElementById("clock-main");
   var elClockSec = document.getElementById("clock-seconds");
   var elCityLabel = document.getElementById("city-label");
@@ -393,6 +429,12 @@ import * as engine from "./alert-engine.js";
           es.stableThresholdMs = null;
         }
         lastThresholdFetch = Date.now();
+        // Re-render info panels if thresholds arrived while already displaying a color
+        if (currentColor) {
+          var saved = currentColor;
+          currentColor = null;
+          applyColor(saved);
+        }
       })
       .catch(function() { /* ignore */ });
   }
@@ -461,8 +503,36 @@ import * as engine from "./alert-engine.js";
       html += "</div>";
       elMissedUsInfo.innerHTML = html;
       elMissedUsInfo.style.display = "block";
+      elPreAlertInfo.style.display = "none";
+    } else if (color === "yellow") {
+      elMissedUsInfo.style.display = "none";
+      // Show "as soon as" siren timing on pre-alert
+      var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[city];
+      if (ci && ci.earliest_siren_seconds != null && es.currentRecord && es.currentRecord.time) {
+        var earliestSec = ci.earliest_siren_seconds;
+        var preAlertMs = es.currentRecord.time * 1000;
+        var expectedMs = preAlertMs + earliestSec * 1000;
+        var expectedDate = new Date(expectedMs);
+        var timeStr = String(expectedDate.getHours()).padStart(2, "0") + ":" +
+          String(expectedDate.getMinutes()).padStart(2, "0");
+        var minPart = Math.floor(earliestSec / 60);
+        var secPart = Math.round(earliestSec % 60);
+        var durationStr = minPart > 0
+          ? minPart + " \u05D3\u05E7\u05D5\u05EA" + (secPart > 0 ? " \u05D5-" + secPart + " \u05E9\u05E0\u05D9\u05D5\u05EA" : "")
+          : Math.round(earliestSec) + " \u05E9\u05E0\u05D9\u05D5\u05EA";
+        // היסטורית, אזעקות ב[city] מגיעות כבר אחרי X דקות מההתראה (≈HH:MM)
+        elPreAlertInfo.innerHTML =
+          "\u05D4\u05D9\u05E1\u05D8\u05D5\u05E8\u05D9\u05EA, \u05D0\u05D6\u05E2\u05E7\u05D5\u05EA \u05D1" +
+          escapeHtml(city) + " \u05DE\u05D2\u05D9\u05E2\u05D5\u05EA \u05DB\u05D1\u05E8 \u05D0\u05D7\u05E8\u05D9 " +
+          durationStr + " \u05DE\u05D4\u05D4\u05EA\u05E8\u05E2\u05D4" +
+          " (\u2248" + timeStr + ")";
+        elPreAlertInfo.style.display = "block";
+      } else {
+        elPreAlertInfo.style.display = "none";
+      }
     } else {
       elMissedUsInfo.style.display = "none";
+      elPreAlertInfo.style.display = "none";
     }
   }
 
@@ -658,6 +728,72 @@ import * as engine from "./alert-engine.js";
           window.location.search = "?city=" + encodeURIComponent(val);
         });
       }
+
+      // ── Geolocation: "Use my location" button ──────────────
+      var locateBtn = document.getElementById("locate-btn");
+      var locateError = document.getElementById("locate-error");
+
+      if (navigator.geolocation && locateBtn) {
+        locateBtn.style.display = "inline-block";
+
+        locateBtn.addEventListener("click", function() {
+          locateBtn.disabled = true;
+          locateBtn.textContent = "📍 מאתר...";
+          locateError.style.display = "none";
+
+          navigator.geolocation.getCurrentPosition(
+            function onSuccess(pos) {
+              var myLat = pos.coords.latitude;
+              var myLng = pos.coords.longitude;
+              fetch("/api/cities-geo.json")
+                .then(function(r) {
+                  if (!r.ok) throw new Error("HTTP " + r.status);
+                  return r.json();
+                })
+                .then(function(cities) {
+                  // Find nearest city by Euclidean approximation (accurate enough for Israel's scale)
+                  var best = null;
+                  var bestDist = Infinity;
+                  for (var i = 0; i < cities.length; i++) {
+                    var dLat = cities[i].lat - myLat;
+                    var dLng = cities[i].lng - myLng;
+                    var dist = dLat * dLat + dLng * dLng;
+                    if (dist < bestDist) {
+                      bestDist = dist;
+                      best = cities[i].name;
+                    }
+                  }
+                  if (best) {
+                    window.location.search = "?city=" + encodeURIComponent(best);
+                  } else {
+                    showLocateError("לא נמצאה עיר קרובה");
+                  }
+                })
+                .catch(function() {
+                  showLocateError("שגיאה בטעינת נתוני ערים");
+                });
+            },
+            function onError(err) {
+              if (err.code === 1) {
+                showLocateError("הגישה למיקום נדחתה");
+              } else if (err.code === 2) {
+                showLocateError("לא ניתן לקבוע מיקום");
+              } else {
+                showLocateError("זמן המתנה למיקום חלף");
+              }
+            },
+            { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
+          );
+
+          function showLocateError(msg) {
+            locateBtn.disabled = false;
+            locateBtn.textContent = "📍 השתמש במיקום שלי";
+            locateError.textContent = msg;
+            locateError.style.display = "block";
+          }
+        });
+      }
+
       return;
     }
 
