@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import os
+import threading
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -182,15 +183,30 @@ def _write_json_blob(container_client, blob_path, data, cache_control="no-cache"
 
 
 LOCK_BLOB = "api/_compute.lock"
-LOCK_LEASE_SECONDS = -1  # infinite lease; released explicitly in __exit__
+LOCK_LEASE_SECONDS = 30  # short lease; background thread renews it
+LOCK_RENEW_INTERVAL = 10  # renew every 10s (well before 30s expiry)
 
 
 class _ComputeLock:
-    """Blob lease-based lock to prevent concurrent threshold computation."""
+    """Blob lease-based lock with background renewal thread.
+
+    Uses a short finite lease (30s) so that if the function crashes, the lock
+    auto-expires quickly. A background daemon thread renews the lease every 10s
+    while the context manager is held.
+    """
 
     def __init__(self, container_client):
         self._container = container_client
         self._lease = None
+        self._stop_event = threading.Event()
+        self._renew_thread = None
+
+    def _renew_loop(self):
+        while not self._stop_event.wait(LOCK_RENEW_INTERVAL):
+            try:
+                self._lease.renew()
+            except Exception:
+                break  # lease lost — stop renewing
 
     def __enter__(self):
         blob = self._container.get_blob_client(LOCK_BLOB)
@@ -201,9 +217,16 @@ class _ComputeLock:
             pass  # already exists
         self._lease = BlobLeaseClient(blob)
         self._lease.acquire(lease_duration=LOCK_LEASE_SECONDS)
+        self._renew_thread = threading.Thread(
+            target=self._renew_loop, daemon=True
+        )
+        self._renew_thread.start()
         return self
 
     def __exit__(self, *args):
+        self._stop_event.set()
+        if self._renew_thread:
+            self._renew_thread.join(timeout=5)
         if self._lease:
             try:
                 self._lease.release()
