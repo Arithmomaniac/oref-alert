@@ -102,6 +102,25 @@
   var gapData, thresholdsData;
   var charts = {};
 
+  function getCitiesFromHash() {
+    var hash = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+    if (!hash) return null;
+    return hash.split(",").map(function(c) { return c.trim(); }).filter(Boolean);
+  }
+
+  function updateHash() {
+    var cities = [];
+    for (var s = 0; s < 3; s++) {
+      var v = document.getElementById("sel" + s).value.trim();
+      if (v && gapData && gapData.cities[v]) cities.push(v);
+    }
+    if (cities.length > 0) {
+      history.replaceState(null, "", "#" + encodeURIComponent(cities.join(",")));
+    } else {
+      history.replaceState(null, "", window.location.pathname);
+    }
+  }
+
   Promise.all([
     fetch("/api/gap_data.json").then(function(r) { return r.json(); }),
     fetch("/api/thresholds.json").then(function(r) { return r.json(); })
@@ -120,6 +139,10 @@
     var available = Object.keys(gapData.cities).sort();
     var activeIdx = [-1, -1, -1];
 
+    // Determine initial cities: hash > defaults
+    var hashCities = getCitiesFromHash();
+    var initCities = hashCities || DEFAULTS;
+
     function showSugg(slot, matches) {
       var sug = document.getElementById("sug" + slot);
       if (!matches.length) { sug.style.display = "none"; activeIdx[slot] = -1; return; }
@@ -137,6 +160,7 @@
       var sug = document.getElementById("sug" + slot);
       inp.value = name;
       sug.style.display = "none";
+      updateHash();
       renderAll();
     }
 
@@ -145,15 +169,17 @@
         var inp = document.getElementById("sel" + slot);
         var sug = document.getElementById("sug" + slot);
 
-        if (DEFAULTS[slot] && available.indexOf(DEFAULTS[slot]) !== -1) {
-          inp.value = DEFAULTS[slot];
+        var initVal = initCities[slot] || "";
+        if (initVal && available.indexOf(initVal) !== -1) {
+          inp.value = initVal;
         }
 
         inp.addEventListener("input", function() {
           var val = inp.value.trim();
-          if (!val) { sug.style.display = "none"; renderAll(); return; }
+          if (!val) { sug.style.display = "none"; updateHash(); renderAll(); return; }
           var matches = available.filter(function(c) { return c.indexOf(val) !== -1; });
           showSugg(slot, matches);
+          updateHash();
           renderAll();
         });
 
@@ -189,6 +215,8 @@
         if (!sug.contains(e.target) && e.target !== inp) sug.style.display = "none";
       }
     });
+
+    updateHash();
   }
 
   function getSelected() {
