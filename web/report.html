@@ -31,31 +31,46 @@
                   padding: 16px 24px; margin-bottom: 24px; display: flex; gap: 16px;
                   flex-wrap: wrap; align-items: center; }
   .city-picker label { font-weight: 600; font-size: 14px; }
-  .city-picker select { font-size: 14px; padding: 6px 10px; border-radius: 6px;
-                         border: 1px solid #ccc; min-width: 150px; direction: rtl; }
+  .city-slot { position: relative; display: inline-block; }
+  .city-slot input { font-size: 14px; padding: 6px 10px; border-radius: 6px;
+                     border: 1px solid #ccc; min-width: 150px; direction: rtl;
+                     outline: none; }
+  .city-slot input:focus { border-color: #1976d2; }
+  .city-sug { display: none; position: absolute; top: 100%; right: 0; left: 0;
+              background: #fff; border: 1px solid #ddd; border-top: none;
+              border-radius: 0 0 6px 6px; max-height: 200px; overflow-y: auto;
+              z-index: 60; direction: rtl; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .city-sug .sug { padding: 6px 10px; cursor: pointer; font-size: 13px;
+                   border-bottom: 1px solid #f0f0f0; }
+  .city-sug .sug:hover, .city-sug .sug.active { background: #e3f2fd; }
   .color-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
                 margin-right: 4px; vertical-align: middle; }
 </style>
 </head>
 <body>
 <h1>Missed-Us Threshold Report (2026)</h1>
-<p>Analysis of how long to wait before declaring &ldquo;missed us&rdquo; (כנראה עבר) for each city.
+<p>Analysis of how long to wait after the first cohort siren before declaring &ldquo;missed us&rdquo; (כנראה עבר) for each city.
 <br>Based on historical pre-alert events from the
 <a href="https://github.com/dleshem/israel-alerts-data">israel-alerts-data</a> dataset.</p>
-<p>
-  <strong>0</strong> = city hit on first siren (no gap) &nbsp;|&nbsp;
-  <strong>positive N</strong> = max inter-siren gap before city was hit &nbsp;|&nbsp;
-  <strong>null</strong> = city never hit (complete miss)
-</p>
+<details>
+<summary style="cursor:pointer;color:#1976d2;font-weight:600">How it works</summary>
+<p style="margin:8px 0 4px">When a PRE_ALERT arrives, other cities in the same alert (&ldquo;cohort&rdquo;) may receive sirens. The threshold is the number of seconds after the <strong>first cohort siren</strong> to wait before declaring the event &ldquo;probably passed&rdquo; for the target city.</p>
+<ul style="margin:4px 0">
+<li><strong>miss</strong> = target city never got a siren (cohort may or may not have)</li>
+<li><strong>immediate</strong> = target city got hit on the same siren wave as cohort (no gap)</li>
+<li><strong>hit after gap</strong> = target city got hit N seconds after the first cohort siren</li>
+</ul>
+<p style="margin:4px 0">The threshold is the minimum wait (in 30s increments, up to 1200s) such that &le;5% of amber declarations would be false (i.e., target city actually gets a siren afterward).</p>
+</details>
 
 <div id="loading" class="loading">טוען נתונים...</div>
 
 <div id="content" style="display:none">
   <div class="city-picker" id="city-picker">
     <span style="font-weight:700">Compare cities:</span>
-    <div><span class="color-dot" style="background:#2196F3"></span><label>1: </label><select id="sel0"></select></div>
-    <div><span class="color-dot" style="background:#F44336"></span><label>2: </label><select id="sel1"></select></div>
-    <div><span class="color-dot" style="background:#4CAF50"></span><label>3: </label><select id="sel2"></select></div>
+    <div class="city-slot"><span class="color-dot" style="background:#2196F3"></span><label>1: </label><input id="sel0" autocomplete="off" placeholder="הקלידו לחיפוש..."><div class="city-sug" id="sug0"></div></div>
+    <div class="city-slot"><span class="color-dot" style="background:#F44336"></span><label>2: </label><input id="sel1" autocomplete="off" placeholder="הקלידו לחיפוש..."><div class="city-sug" id="sug1"></div></div>
+    <div class="city-slot"><span class="color-dot" style="background:#4CAF50"></span><label>3: </label><input id="sel2" autocomplete="off" placeholder="הקלידו לחיפוש..."><div class="city-sug" id="sug2"></div></div>
   </div>
 
   <div class="summary" id="stat-cards"></div>
@@ -65,7 +80,7 @@
     <div class="chart-box wide"><canvas id="outcomeChart"></canvas></div>
   </div>
 
-  <h2>Gap Interval Distribution (30s bins)</h2>
+  <h2>First-Siren-to-Hit Gap Distribution (30s bins)</h2>
   <div class="chart-row">
     <div class="chart-box wide"><canvas id="histAll"></canvas></div>
   </div>
@@ -102,31 +117,84 @@
   });
 
   function initPickers() {
-    // Only show cities that have gap data
     var available = Object.keys(gapData.cities).sort();
-    for (var s = 0; s < 3; s++) {
-      var sel = document.getElementById("sel" + s);
-      var noneOpt = document.createElement("option");
-      noneOpt.value = ""; noneOpt.textContent = "(none)";
-      sel.appendChild(noneOpt);
-      for (var i = 0; i < available.length; i++) {
-        var opt = document.createElement("option");
-        opt.value = available[i];
-        opt.textContent = available[i];
-        sel.appendChild(opt);
+    var activeIdx = [-1, -1, -1];
+
+    function showSugg(slot, matches) {
+      var sug = document.getElementById("sug" + slot);
+      if (!matches.length) { sug.style.display = "none"; activeIdx[slot] = -1; return; }
+      var html = "";
+      for (var i = 0; i < Math.min(matches.length, 8); i++) {
+        html += '<div class="sug" data-city="' + matches[i] + '">' + matches[i] + '</div>';
       }
-      // Default selection
-      if (DEFAULTS[s] && available.indexOf(DEFAULTS[s]) !== -1) {
-        sel.value = DEFAULTS[s];
-      }
-      sel.addEventListener("change", renderAll);
+      sug.innerHTML = html;
+      sug.style.display = "block";
+      activeIdx[slot] = -1;
     }
+
+    function selectCity(slot, name) {
+      var inp = document.getElementById("sel" + slot);
+      var sug = document.getElementById("sug" + slot);
+      inp.value = name;
+      sug.style.display = "none";
+      renderAll();
+    }
+
+    for (var s = 0; s < 3; s++) {
+      (function(slot) {
+        var inp = document.getElementById("sel" + slot);
+        var sug = document.getElementById("sug" + slot);
+
+        if (DEFAULTS[slot] && available.indexOf(DEFAULTS[slot]) !== -1) {
+          inp.value = DEFAULTS[slot];
+        }
+
+        inp.addEventListener("input", function() {
+          var val = inp.value.trim();
+          if (!val) { sug.style.display = "none"; renderAll(); return; }
+          var matches = available.filter(function(c) { return c.indexOf(val) !== -1; });
+          showSugg(slot, matches);
+          renderAll();
+        });
+
+        inp.addEventListener("keydown", function(e) {
+          var items = sug.querySelectorAll(".sug");
+          if (!items.length) return;
+          if (e.key === "ArrowDown") { e.preventDefault(); activeIdx[slot] = Math.min(activeIdx[slot] + 1, items.length - 1); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); activeIdx[slot] = Math.max(activeIdx[slot] - 1, 0); }
+          else if (e.key === "Enter" && activeIdx[slot] >= 0) { e.preventDefault(); selectCity(slot, items[activeIdx[slot]].dataset.city); return; }
+          else return;
+          for (var i = 0; i < items.length; i++) items[i].classList.toggle("active", i === activeIdx[slot]);
+        });
+
+        sug.addEventListener("click", function(e) {
+          var el = e.target.closest(".sug");
+          if (el) selectCity(slot, el.dataset.city);
+        });
+
+        inp.addEventListener("focus", function() {
+          var val = inp.value.trim();
+          if (val) {
+            var matches = available.filter(function(c) { return c.indexOf(val) !== -1; });
+            showSugg(slot, matches);
+          }
+        });
+      })(s);
+    }
+
+    document.addEventListener("click", function(e) {
+      for (var i = 0; i < 3; i++) {
+        var sug = document.getElementById("sug" + i);
+        var inp = document.getElementById("sel" + i);
+        if (!sug.contains(e.target) && e.target !== inp) sug.style.display = "none";
+      }
+    });
   }
 
   function getSelected() {
     var result = [];
     for (var s = 0; s < 3; s++) {
-      var v = document.getElementById("sel" + s).value;
+      var v = document.getElementById("sel" + s).value.trim();
       if (v && gapData.cities[v]) result.push(v);
     }
     return result;
@@ -147,7 +215,7 @@
     });
     gapIntervals.sort(function(a, b) { return a - b; });
 
-    var maxThresh = 600;
+    var maxThresh = 1200;
     var thresholdValues = [];
     for (var t = 0; t <= maxThresh; t += 30) thresholdValues.push(t);
     var fnRates = thresholdValues.map(function(t) {
@@ -255,7 +323,7 @@
         })
       },
       options: {
-        plugins: { title: { display: true, text: "Gap Interval Distribution (30s bins)" } },
+        plugins: { title: { display: true, text: "First-Siren-to-Hit Gap Distribution (30s bins)" } },
         scales: { y: { title: { display: true, text: "Count" } } }
       }
     });
@@ -319,7 +387,7 @@
         },
         scales: {
           y: { title: { display: true, text: "False Negative Rate (%)" }, min: 0 },
-          x: { title: { display: true, text: "COHORT_STABLE_SECONDS threshold" } }
+          x: { title: { display: true, text: "Seconds after first cohort siren" } }
         }
       }
     });
