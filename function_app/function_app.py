@@ -535,87 +535,98 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
     """Daily job: compute per-city alert gap thresholds for ALL cities."""
     container = _get_container_client()
 
-    with _ComputeLock(container):
-        gap_data = _read_json_blob(
-            container, "api/gap_data.json",
-            default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
-        )
+    # Phase 1: CSV download + threshold computation (locked, may fail independently)
+    try:
+        with _ComputeLock(container):
+            gap_data = _read_json_blob(
+                container, "api/gap_data.json",
+                default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
+            )
 
-        # Download CSV — use Range header to skip already-processed bytes
-        byte_offset = gap_data.get("csv_byte_offset", 0)
-        headers = {}
-        if byte_offset > 0:
-            headers["Range"] = f"bytes={byte_offset}-"
-            logging.info("Downloading israel-alerts.csv from byte %d …", byte_offset)
-        else:
-            logging.info("Downloading full israel-alerts.csv …")
+            # Download CSV — use Range header to skip already-processed bytes
+            byte_offset = gap_data.get("csv_byte_offset", 0)
+            headers = {}
+            if byte_offset > 0:
+                headers["Range"] = f"bytes={byte_offset}-"
+                logging.info("Downloading israel-alerts.csv from byte %d …", byte_offset)
+            else:
+                logging.info("Downloading full israel-alerts.csv …")
 
-        resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
-        resp.raise_for_status()
-        raw_bytes = resp.content
+            resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
+            if resp.status_code == 416:
+                # Stored offset exceeds file size (upstream CSV regenerated).
+                # Reset and re-download from scratch.
+                logging.warning("416 Range Not Satisfiable — resetting offset to 0")
+                gap_data["csv_byte_offset"] = 0
+                resp = httpx.get(CSV_URL, timeout=120.0, verify=True)
+            resp.raise_for_status()
+            raw_bytes = resp.content
 
-        if byte_offset > 0:
-            csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
-            new_total_bytes = byte_offset + len(raw_bytes)
-        else:
-            csv_text = raw_bytes.decode("utf-8")
-            new_total_bytes = len(raw_bytes)
+            byte_offset = gap_data.get("csv_byte_offset", 0)
+            if byte_offset > 0:
+                csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
+                new_total_bytes = byte_offset + len(raw_bytes)
+            else:
+                csv_text = raw_bytes.decode("utf-8")
+                new_total_bytes = len(raw_bytes)
 
-        logging.info("Downloaded %d bytes (total offset: %d)", len(raw_bytes), new_total_bytes)
+            logging.info("Downloaded %d bytes (total offset: %d)", len(raw_bytes), new_total_bytes)
 
-        now = datetime.now(timezone.utc)
-        cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
+            now = datetime.now(timezone.utc)
+            cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
 
-        all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
-        logging.info("Parsed %d rows (2026+, before 6h lag)", len(all_rows))
+            all_rows, pre_alerts_by_date = _load_csv_rows(csv_text, cutoff_dt)
+            logging.info("Parsed %d rows (2026+, before 6h lag)", len(all_rows))
 
-        watermark_dt = None
-        if gap_data.get("watermark"):
-            watermark_dt = datetime.fromisoformat(gap_data["watermark"])
+            watermark_dt = None
+            if gap_data.get("watermark"):
+                watermark_dt = datetime.fromisoformat(gap_data["watermark"])
 
-        # Single-pass analysis for ALL cities
-        new_city_events = _analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt)
-        for city_name, new_events in new_city_events.items():
-            existing = gap_data["cities"].get(city_name, [])
-            existing.extend(new_events)
-            gap_data["cities"][city_name] = existing
+            # Single-pass analysis for ALL cities
+            new_city_events = _analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt)
+            for city_name, new_events in new_city_events.items():
+                existing = gap_data["cities"].get(city_name, [])
+                existing.extend(new_events)
+                gap_data["cities"][city_name] = existing
 
-        logging.info("Analyzed %d cities (%d new events total)",
-                     len(new_city_events),
-                     sum(len(v) for v in new_city_events.values()))
+            logging.info("Analyzed %d cities (%d new events total)",
+                         len(new_city_events),
+                         sum(len(v) for v in new_city_events.values()))
 
-        # Update watermark and byte offset for next incremental download
-        if all_rows:
-            latest_dt = max(dt for dt, *_ in all_rows)
-            gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
-        gap_data["csv_byte_offset"] = new_total_bytes
+            # Update watermark and byte offset for next incremental download
+            if all_rows:
+                latest_dt = max(dt for dt, *_ in all_rows)
+                gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
+            gap_data["csv_byte_offset"] = new_total_bytes
 
-        # Compute thresholds per city
-        target_fn_rate = 0.05
-        thresholds = {
-            "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "default_stable_seconds": 300,
-            "target_fn_rate": target_fn_rate,
-            "cities": {},
-        }
-
-        for city_name, events in gap_data["cities"].items():
-            if len(events) < MIN_EVENTS_FOR_THRESHOLD:
-                continue
-            stable_sec, event_count, fn_rate = _compute_threshold(events, target_fn_rate)
-            city_thresh = {
-                "stable_seconds": stable_sec,
-                "events": event_count,
-                "fn_rate": round(fn_rate, 4),
+            # Compute thresholds per city
+            target_fn_rate = 0.05
+            thresholds = {
+                "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "default_stable_seconds": 300,
+                "target_fn_rate": target_fn_rate,
+                "cities": {},
             }
-            timing = _compute_siren_timing_stats(events)
-            if timing:
-                city_thresh.update(timing)
-            thresholds["cities"][city_name] = city_thresh
 
-        _write_json_blob(container, "api/gap_data.json", gap_data)
-        _write_json_blob(container, "api/thresholds.json", thresholds)
-        logging.info("Wrote thresholds for %d cities", len(thresholds["cities"]))
+            for city_name, events in gap_data["cities"].items():
+                if len(events) < MIN_EVENTS_FOR_THRESHOLD:
+                    continue
+                stable_sec, event_count, fn_rate = _compute_threshold(events, target_fn_rate)
+                city_thresh = {
+                    "stable_seconds": stable_sec,
+                    "events": event_count,
+                    "fn_rate": round(fn_rate, 4),
+                }
+                timing = _compute_siren_timing_stats(events)
+                if timing:
+                    city_thresh.update(timing)
+                thresholds["cities"][city_name] = city_thresh
+
+            _write_json_blob(container, "api/gap_data.json", gap_data)
+            _write_json_blob(container, "api/thresholds.json", thresholds)
+            logging.info("Wrote thresholds for %d cities", len(thresholds["cities"]))
+    except Exception:
+        logging.exception("Threshold computation failed — continuing to city/geo refresh")
 
     # Refresh the cached city list from oref
     try:
