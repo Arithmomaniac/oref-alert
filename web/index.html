@@ -830,6 +830,22 @@ import * as engine from "./alert-engine.js";
     });
     setInterval(checkSession, 60000);
 
+    // Screen Wake Lock — keep display on while the app is active
+    var wakeLock = null;
+
+    function requestWakeLock() {
+      if (!("wakeLock" in navigator)) return;
+      navigator.wakeLock.request("screen").then(function (sentinel) {
+        wakeLock = sentinel;
+        sentinel.addEventListener("release", function () { wakeLock = null; });
+      }).catch(function () {});
+    }
+
+    requestWakeLock();
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible") requestWakeLock();
+    });
+
     // Start polling — first poll also rebuilds recent history
     poll();
     pollTimer = setInterval(poll, POLL_INTERVAL);
