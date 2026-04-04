@@ -191,22 +191,17 @@ body {
 /* --- Help ? button (missed-us) --- */
 #help-btn {
   display: none;
-  width: 1.2em;
-  height: 1.2em;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.25);
-  border: 1.5px solid rgba(255,255,255,0.5);
-  color: #fff;
-  font-size: clamp(0.9rem, 2.2vmin, 2.5vw);
-  font-weight: 700;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.6);
+  font-size: clamp(1rem, 2.5vmin, 3vw);
   cursor: pointer;
   vertical-align: middle;
   margin-right: 0.3em;
-  transition: background 0.2s;
-  line-height: 1;
+  transition: color 0.2s;
   padding: 0;
 }
-#help-btn:hover { background: rgba(255,255,255,0.4); }
+#help-btn:hover { color: rgba(255,255,255,0.9); }
 
 /* --- Missed-us collapsible panel --- */
 #missed-us-info {
@@ -395,7 +390,7 @@ body {
 
 <div id="center">
   <div id="status-text"></div>
-  <button id="help-btn" type="button" aria-label="פרטים">?</button>
+  <button id="help-btn" type="button" aria-label="פרטים"><svg viewBox="0 0 512 512" fill="currentColor" style="width:1em;height:1em"><path d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM169.8 165.3c7.9-22.3 29.1-37.3 52.8-37.3h58.3c34.9 0 63.1 28.3 63.1 63.1 0 22.6-12.1 43.5-31.7 54.8L280 264.4c-.2 13-10.9 23.6-24 23.6c-13.3 0-24-10.7-24-24V250.5c0-8.6 4.6-16.5 12.1-20.8l44.3-25.4c4.7-2.7 7.6-7.7 7.6-13.1 0-8.4-6.8-15.1-15.1-15.1H222.6c-3.4 0-6.4 2.1-7.5 5.3l-.4 1.2c-4.4 12.5-18.2 19-30.6 14.6s-19-18.2-14.6-30.6l.4-1.2zM224 352a32 32 0 1 1 64 0 32 32 0 1 1-64 0z"/></svg></button>
   <div id="missed-us-info"></div>
   <div id="pre-alert-info"></div>
   <div id="clock"><span id="clock-main"></span><span id="clock-seconds"></span></div>
@@ -553,13 +548,13 @@ import * as engine from "./alert-engine.js";
     if (color === "yellow_orange") {
       var threshSec = Math.round(es.stableThresholdMs / 1000);
       var threshMin = threshSec >= 60 ? Math.floor(threshSec / 60) + ":" + String(threshSec % 60).padStart(2, "0") : threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA";
-      // ערים אחרות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N.
+      // ערים סמוכות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N מהאזעקה הראשונה בערים הסמוכות.
       // הסבירות שהאזעקה אכן עברה: לפחות 95%.
       var html = '<div class="mu-summary">' +
-        "\u05E2\u05E8\u05D9\u05DD \u05D0\u05D7\u05E8\u05D5\u05EA \u05D1\u05D0\u05D5\u05EA\u05D4 " +
+        "\u05E2\u05E8\u05D9\u05DD \u05E1\u05DE\u05D5\u05DB\u05D5\u05EA \u05D1\u05D0\u05D5\u05EA\u05D4 " +
         "\u05D4\u05EA\u05E8\u05E2\u05D4 \u05E7\u05D9\u05D1\u05DC\u05D5 \u05D0\u05D6\u05E2\u05E7\u05D5\u05EA, " +
         "\u05D0\u05DA " + escapeHtml(city) + " \u05DC\u05D0 \u05E7\u05D9\u05D1\u05DC\u05D4 \u05D1\u05DE\u05E9\u05DA " +
-        threshMin + "." +
+        threshMin + " \u05DE\u05D4\u05D0\u05D6\u05E2\u05E7\u05D4 \u05D4\u05E8\u05D0\u05E9\u05D5\u05E0\u05D4 \u05D1\u05E2\u05E8\u05D9\u05DD \u05D4\u05E1\u05DE\u05D5\u05DB\u05D5\u05EA." +
         "<br>\u05D4\u05E1\u05D1\u05D9\u05E8\u05D5\u05EA \u05E9\u05D4\u05D0\u05D6\u05E2\u05E7\u05D4 \u05D0\u05DB\u05DF \u05E2\u05D1\u05E8\u05D4: " +
         "\u05DC\u05E4\u05D7\u05D5\u05EA 95%." +
         '</div>';
