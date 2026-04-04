@@ -1,0 +1,49 @@
+name: Trigger threshold computation
+
+on:
+  schedule:
+    # Daily at 03:07 UTC (offset from :00 to avoid GitHub cron congestion)
+    - cron: '7 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Invoke compute_thresholds via admin API
+        run: |
+          FUNC_APP="${{ vars.AZURE_FUNCTIONAPP_NAME }}"
+
+          # Fetch the master key via Azure CLI
+          MASTER_KEY=$(az functionapp keys list \
+            --name "$FUNC_APP" \
+            --resource-group "${FUNC_APP/-func/}-rg" \
+            --query masterKey --output tsv)
+
+          # POST to the admin endpoint — returns 202 Accepted immediately
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "x-functions-key: $MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "https://${FUNC_APP}.azurewebsites.net/admin/functions/compute_thresholds")
+
+          echo "Response status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -ne 202 ]; then
+            echo "::error::Expected 202, got $HTTP_STATUS"
+            exit 1
+          fi
+          echo "✅ compute_thresholds triggered successfully"

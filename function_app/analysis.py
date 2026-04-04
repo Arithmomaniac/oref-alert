@@ -6,7 +6,6 @@ Used by both the Azure Function (function_app.py) and the local CLI
 """
 
 import csv
-import io
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -27,18 +26,43 @@ def city_matches(area: str, city: str) -> bool:
     return city in area
 
 
-def load_csv_rows(csv_text: str, cutoff_dt: datetime):
-    """Parse CSV text, return rows from 2026+ before cutoff_dt.
+def load_csv_rows(lines, cutoff_dt: datetime, *, min_rid: int | None = None):
+    """Parse CSV lines, return rows from 2026+ before cutoff_dt.
 
-    Each row is (datetime, category, areas_list, alertDate_str).
-    Also builds pre_alerts_by_date: alertDate -> set of area names.
+    ``lines`` can be any iterable of CSV text lines (a StringIO, a file
+    object, or a generator yielding decoded lines from a streaming HTTP
+    response).  This keeps peak memory proportional to a single row
+    rather than the entire file.
+
+    When *min_rid* is given, rows with ``rid <= min_rid`` are skipped
+    (incremental processing).
+
+    Returns (all_rows, pre_alerts_by_date, max_rid).
+      all_rows: list of (datetime, category, areas_list, alertDate_str)
+      pre_alerts_by_date: alertDate -> set of area names
+      max_rid: highest rid seen (for watermarking), or None
     """
     pre_alerts_by_date = defaultdict(set)
     all_rows = []
+    max_rid: int | None = None
 
-    reader = csv.reader(io.StringIO(csv_text))
+    reader = csv.reader(lines)
     next(reader)  # skip header
     for row in reader:
+        if len(row) < 8:
+            continue
+        # rid is the last column (index 7)
+        try:
+            rid = int(row[7])
+        except (ValueError, IndexError):
+            rid = None
+
+        if min_rid is not None and rid is not None and rid <= min_rid:
+            continue
+
+        if rid is not None and (max_rid is None or rid > max_rid):
+            max_rid = rid
+
         alert_date_str = row[3]
         if not alert_date_str.startswith("202") or alert_date_str < "2026":
             continue
@@ -56,7 +80,7 @@ def load_csv_rows(csv_text: str, cutoff_dt: datetime):
                 pre_alerts_by_date[alert_date_str].add(area)
 
     all_rows.sort(key=lambda r: r[0])
-    return all_rows, pre_alerts_by_date
+    return all_rows, pre_alerts_by_date, max_rid
 
 
 def find_end_time(all_rows, target_city, start_dt):

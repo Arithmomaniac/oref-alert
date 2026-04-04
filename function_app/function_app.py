@@ -296,43 +296,28 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
         with _ComputeLock(container):
             gap_data = _read_json_blob(
                 container, "api/gap_data.json",
-                default={"watermark": None, "csv_byte_offset": 0, "cities": {}},
+                default={"watermark": None, "last_rid": None, "cities": {}},
             )
 
-            # Download CSV — use Range header to skip already-processed bytes
-            byte_offset = gap_data.get("csv_byte_offset", 0)
-            headers = {}
-            if byte_offset > 0:
-                headers["Range"] = f"bytes={byte_offset}-"
-                logging.info("Downloading israel-alerts.csv from byte %d …", byte_offset)
-            else:
-                logging.info("Downloading full israel-alerts.csv …")
-
-            resp = httpx.get(CSV_URL, timeout=120.0, verify=True, headers=headers)
-            if resp.status_code == 416:
-                # Stored offset exceeds file size (upstream CSV regenerated).
-                # Reset and re-download from scratch.
-                logging.warning("416 Range Not Satisfiable — resetting offset to 0")
-                gap_data["csv_byte_offset"] = 0
-                resp = httpx.get(CSV_URL, timeout=120.0, verify=True)
-            resp.raise_for_status()
-            raw_bytes = resp.content
-
-            byte_offset = gap_data.get("csv_byte_offset", 0)
-            if byte_offset > 0:
-                csv_text = "data,date,time,alertDate,category,category_desc,matrix_id,rid\n" + raw_bytes.decode("utf-8")
-                new_total_bytes = byte_offset + len(raw_bytes)
-            else:
-                csv_text = raw_bytes.decode("utf-8")
-                new_total_bytes = len(raw_bytes)
-
-            logging.info("Downloaded %d bytes (total offset: %d)", len(raw_bytes), new_total_bytes)
+            # Stream CSV — line-by-line to avoid loading 40+ MB into memory.
+            # Use rid watermark to skip already-processed rows (survives
+            # upstream CSV regeneration, unlike byte-offset).
+            last_rid = gap_data.get("last_rid")
+            logging.info("Streaming israel-alerts.csv (skip rid <= %s) …", last_rid)
 
             now = datetime.now(timezone.utc)
             cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
 
-            all_rows, pre_alerts_by_date = load_csv_rows(csv_text, cutoff_dt)
-            logging.info("Parsed %d rows (2026+, before 6h lag)", len(all_rows))
+            with httpx.Client(timeout=300.0, verify=True) as client:
+                with client.stream("GET", CSV_URL) as resp:
+                    resp.raise_for_status()
+                    lines = resp.iter_lines()
+                    all_rows, pre_alerts_by_date, max_rid = load_csv_rows(
+                        lines, cutoff_dt, min_rid=last_rid,
+                    )
+
+            logging.info("Parsed %d rows (2026+, before 6h lag), max_rid=%s",
+                         len(all_rows), max_rid)
 
             watermark_dt = None
             if gap_data.get("watermark"):
@@ -349,11 +334,12 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
                          len(new_city_events),
                          sum(len(v) for v in new_city_events.values()))
 
-            # Update watermark and byte offset for next incremental download
+            # Update watermarks
             if all_rows:
                 latest_dt = max(dt for dt, *_ in all_rows)
                 gap_data["watermark"] = (latest_dt - timedelta(hours=6)).isoformat()
-            gap_data["csv_byte_offset"] = new_total_bytes
+            if max_rid is not None:
+                gap_data["last_rid"] = max_rid
 
             # Compute thresholds per city
             now = datetime.now(timezone.utc)

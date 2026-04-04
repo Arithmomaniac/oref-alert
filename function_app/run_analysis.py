@@ -39,25 +39,24 @@ def main():
     parser.add_argument("--city", help="Show detailed stats for a specific city")
     args = parser.parse_args()
 
-    # Load CSV
+    # Load and parse CSV (streaming when downloading, to match Azure Function behavior)
+    now = datetime.now(timezone.utc)
+    cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
+
     if args.csv:
         log.info("Reading CSV from %s", args.csv)
         with open(args.csv, "r", encoding="utf-8") as f:
-            csv_text = f.read()
-        csv_byte_count = len(csv_text.encode("utf-8"))
+            all_rows, pre_alerts_by_date, max_rid = load_csv_rows(f, cutoff_dt)
     else:
-        log.info("Downloading CSV from GitHub...")
-        resp = httpx.get(CSV_URL, timeout=300.0)
-        resp.raise_for_status()
-        csv_text = resp.content.decode("utf-8")
-        csv_byte_count = len(resp.content)
-    log.info("CSV: %d bytes", csv_byte_count)
-
-    # Parse
-    now = datetime.now(timezone.utc)
-    cutoff_dt = (now - timedelta(hours=6)).replace(tzinfo=None)
-    all_rows, pre_alerts_by_date = load_csv_rows(csv_text, cutoff_dt)
-    log.info("Parsed %d rows, %d pre-alert dates", len(all_rows), len(pre_alerts_by_date))
+        log.info("Streaming CSV from GitHub...")
+        with httpx.Client(timeout=300.0) as client:
+            with client.stream("GET", CSV_URL) as resp:
+                resp.raise_for_status()
+                all_rows, pre_alerts_by_date, max_rid = load_csv_rows(
+                    resp.iter_lines(), cutoff_dt,
+                )
+    log.info("Parsed %d rows, %d pre-alert dates, max_rid=%s",
+             len(all_rows), len(pre_alerts_by_date), max_rid)
 
     # Analyze (from scratch, no watermark)
     city_events = analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt=None)
@@ -67,7 +66,7 @@ def main():
     # Build gap_data
     gap_data = {
         "watermark": (max(dt for dt, *_ in all_rows) - timedelta(hours=6)).isoformat() if all_rows else None,
-        "csv_byte_offset": csv_byte_count,
+        "last_rid": max_rid,
         "cities": city_events,
     }
 
