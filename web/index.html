@@ -188,20 +188,51 @@ body {
   opacity: 0.7;
 }
 
-/* --- Missed-us explanation --- */
+/* --- Help ? button (missed-us) --- */
+#help-btn {
+  display: none;
+  width: 1.2em;
+  height: 1.2em;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.25);
+  border: 1.5px solid rgba(255,255,255,0.5);
+  color: #fff;
+  font-size: clamp(0.9rem, 2.2vmin, 2.5vw);
+  font-weight: 700;
+  cursor: pointer;
+  vertical-align: middle;
+  margin-right: 0.3em;
+  transition: background 0.2s;
+  line-height: 1;
+  padding: 0;
+}
+#help-btn:hover { background: rgba(255,255,255,0.4); }
+
+/* --- Missed-us collapsible panel --- */
 #missed-us-info {
   display: none;
-  font-size: clamp(0.65rem, 1.6vmin, 2vw);
-  opacity: 0.85;
-  margin-top: 0.5em;
-  text-shadow: 0 1px 4px rgba(0,0,0,0.25);
-  max-width: min(600px, 80vw);
-  line-height: 1.5;
+  background: rgba(0,0,0,0.2);
+  border-radius: 10px;
+  padding: 0.8em 1.2em;
+  margin-top: 0.6em;
+  max-width: min(500px, 80vw);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  text-align: right;
 }
-#missed-us-info .mu-detail {
-  opacity: 0.7;
-  font-size: 0.9em;
-  margin-top: 0.3em;
+#missed-us-info .mu-summary {
+  font-size: clamp(0.7rem, 1.6vmin, 2vw);
+  line-height: 1.7;
+  opacity: 0.95;
+  margin-bottom: 0.6em;
+}
+#missed-us-info .mu-link {
+  font-size: clamp(0.6rem, 1.3vmin, 1.6vw);
+  opacity: 0.8;
+}
+#missed-us-info .mu-link a {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 /* --- Pre-alert "as soon as" info --- */
 #pre-alert-info {
@@ -301,6 +332,40 @@ body {
   font-size: clamp(0.75rem, 1.8vmin, 2vw);
 }
 
+/* --- Back / change city button --- */
+#back-btn {
+  display: none;
+  position: fixed;
+  top: 2vh;
+  right: 2vw;
+  background: rgba(0,0,0,0.15);
+  border: none;
+  color: rgba(255,255,255,0.5);
+  font-size: clamp(0.7rem, 2vmin, 2.2vw);
+  padding: 0.3em 0.7em;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.2s, color 0.2s;
+  z-index: 10;
+  font-family: inherit;
+}
+#back-btn:hover { background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8); }
+
+/* --- GitHub attribution --- */
+#github-link {
+  display: none;
+  position: fixed;
+  top: 2vh;
+  left: 2vw;
+  color: rgba(255,255,255,0.4);
+  text-decoration: none;
+  transition: color 0.2s;
+  z-index: 10;
+}
+#github-link:hover { color: rgba(255,255,255,0.8); }
+#github-link svg { width: clamp(14px, 2vmin, 20px); height: clamp(14px, 2vmin, 20px); fill: currentColor; }
+
 /* --- Invalid city banner --- */
 #invalid-city {
   display: none;
@@ -323,8 +388,14 @@ body {
 <div id="conn-warning"></div>
 <div id="invalid-city"></div>
 
+<button id="back-btn">&#x2190; החלפת עיר</button>
+<a id="github-link" href="https://github.com/Arithmomaniac/oref-alert" target="_blank" rel="noopener">
+  <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+</a>
+
 <div id="center">
   <div id="status-text"></div>
+  <button id="help-btn" type="button" aria-label="פרטים">?</button>
   <div id="missed-us-info"></div>
   <div id="pre-alert-info"></div>
   <div id="clock"><span id="clock-main"></span><span id="clock-seconds"></span></div>
@@ -345,12 +416,10 @@ body {
   <div id="city-error">עיר לא נמצאה במערכת</div>
   <button id="locate-btn" type="button">📍 השתמש במיקום שלי</button>
   <div id="locate-error"></div>
-  <p dir="ltr" style="direction:ltr; margin-top:1em; opacity:0.6">or add <code>?city=YourCity</code> to the URL</p>
 </div>
 
 <div id="expired-overlay">
   <h1>הפעלה פגה — לחצו לטעינה מחדש</h1>
-  <p>Session expired — tap to reload</p>
 </div>
 
 <script type="module">
@@ -379,6 +448,9 @@ import * as engine from "./alert-engine.js";
   var elConnWarn = document.getElementById("conn-warning");
   var elBanner = document.getElementById("session-banner");
   var elExpired = document.getElementById("expired-overlay");
+  var elHelpBtn = document.getElementById("help-btn");
+  var elBackBtn = document.getElementById("back-btn");
+  var elGithubLink = document.getElementById("github-link");
 
   // ── State ──────────────────────────────────────────────────
   var city = "";
@@ -477,34 +549,27 @@ import * as engine from "./alert-engine.js";
     var info = COLOR_MAP[color];
     elBody.style.backgroundColor = info.bg;
     elStatus.textContent = info.label;
-    // Show missed-us explanation only in yellow_orange state
+    // Show ? button and populate hidden panel only in yellow_orange state
     if (color === "yellow_orange") {
       var threshSec = Math.round(es.stableThresholdMs / 1000);
       var threshMin = threshSec >= 60 ? Math.floor(threshSec / 60) + ":" + String(threshSec % 60).padStart(2, "0") : threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA";
-      var html = "\u05E2\u05E8\u05D9\u05DD \u05D0\u05D7\u05E8\u05D5\u05EA \u05D1\u05D0\u05D5\u05EA\u05D4 " +
+      // ערים אחרות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N.
+      // הסבירות שהאזעקה אכן עברה: לפחות 95%.
+      var html = '<div class="mu-summary">' +
+        "\u05E2\u05E8\u05D9\u05DD \u05D0\u05D7\u05E8\u05D5\u05EA \u05D1\u05D0\u05D5\u05EA\u05D4 " +
         "\u05D4\u05EA\u05E8\u05E2\u05D4 \u05E7\u05D9\u05D1\u05DC\u05D5 \u05D0\u05D6\u05E2\u05E7\u05D5\u05EA, " +
-        "\u05D0\u05DA " + city + " \u05DC\u05D0 \u05E7\u05D9\u05D1\u05DC\u05D4 \u05D1\u05DE\u05E9\u05DA " +
-        threshMin + " \u05DE\u05D4\u05D0\u05D6\u05E2\u05E7\u05D4 \u05D4\u05E8\u05D0\u05E9\u05D5\u05E0\u05D4.";
-      // ערים אחרות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N מהאזעקה הראשונה.
-      var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[city];
-      html += '<div class="mu-detail">';
-      if (ci) {
-        var accuracy = ((1 - ci.fn_rate) * 100).toFixed(0);
-        html += "\u05E1\u05E3 " + city + ": " + threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA " +
-          "(" + ci.events + " \u05D0\u05D9\u05E8\u05D5\u05E2\u05D9\u05DD \u05D4\u05D9\u05E1\u05D8\u05D5\u05E8\u05D9\u05D9\u05DD, " +
-          accuracy + "% \u05D3\u05D9\u05D5\u05E7)";
-        // סף [city]: N שניות (M אירועים היסטוריים, X% דיוק)
-        html += "<br>";
-      }
-      html += "Other cities in the same alert received sirens, but " + escapeHtml(city) +
-        " did not within " + threshSec + "s of the first siren. ";
-      html += "The " + threshSec + "s threshold for " + escapeHtml(city) +
-        " is calibrated from historical data so this indication is correct at least 95% of the time.";
-      html += "</div>";
+        "\u05D0\u05DA " + escapeHtml(city) + " \u05DC\u05D0 \u05E7\u05D9\u05D1\u05DC\u05D4 \u05D1\u05DE\u05E9\u05DA " +
+        threshMin + "." +
+        "<br>\u05D4\u05E1\u05D1\u05D9\u05E8\u05D5\u05EA \u05E9\u05D4\u05D0\u05D6\u05E2\u05E7\u05D4 \u05D0\u05DB\u05DF \u05E2\u05D1\u05E8\u05D4: " +
+        "\u05DC\u05E4\u05D7\u05D5\u05EA 95%." +
+        '</div>';
+      html += '<div class="mu-link"><a href="/report.html#' + encodeURIComponent(city) +
+        '">\u05DC\u05DE\u05D9\u05D3\u05E2 \u05E0\u05D5\u05E1\u05E3 \u2014 \u05D3\u05D5\u05F4\u05D7 \u05E0\u05D9\u05EA\u05D5\u05D7 \u05E1\u05E3 \u05D4\u05D4\u05DE\u05EA\u05E0\u05D4 \u2190</a></div>';
       elMissedUsInfo.innerHTML = html;
-      elMissedUsInfo.style.display = "block";
+      elHelpBtn.style.display = "inline-flex";
       elPreAlertInfo.style.display = "none";
     } else if (color === "yellow") {
+      elHelpBtn.style.display = "none";
       elMissedUsInfo.style.display = "none";
       // Show "as soon as" siren timing on pre-alert
       var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[city];
@@ -531,6 +596,7 @@ import * as engine from "./alert-engine.js";
         elPreAlertInfo.style.display = "none";
       }
     } else {
+      elHelpBtn.style.display = "none";
       elMissedUsInfo.style.display = "none";
       elPreAlertInfo.style.display = "none";
     }
@@ -800,6 +866,17 @@ import * as engine from "./alert-engine.js";
     // Show city label + update tab title
     elCityLabel.textContent = city;
     document.title = city + " \u2013 \u05D4\u05EA\u05E8\u05D0\u05D5\u05EA \u05E4\u05D9\u05E7\u05D5\u05D3 \u05D4\u05E2\u05D5\u05E8\u05E3";
+
+    // Show back button + GitHub link
+    elBackBtn.style.display = "block";
+    elBackBtn.addEventListener("click", function() { window.location.href = "./"; });
+    elGithubLink.style.display = "block";
+
+    // Help button toggles missed-us panel
+    elHelpBtn.addEventListener("click", function() {
+      var panel = elMissedUsInfo;
+      panel.style.display = panel.style.display === "block" ? "none" : "block";
+    });
 
     // Validate city against known list and show warning if invalid
     fetch("/api/cities.json")
