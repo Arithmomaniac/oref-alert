@@ -228,7 +228,7 @@ def analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt):
 
 
 def compute_threshold(events, target_fn_rate=0.05):
-    """Find the lowest threshold (30s increments, 30-1200s) where FN rate ≤ target.
+    """Find the lowest threshold (15s increments, 15-1200s) where FN rate ≤ target.
 
     FN = outcome is hit_after_gap with gap > threshold.
     FN rate = FN / (misses_with_sirens + FN).
@@ -242,7 +242,7 @@ def compute_threshold(events, target_fn_rate=0.05):
         if e["outcome"] == "miss" and e.get("cohort_sirens", 0) > 0
     )
 
-    for threshold in range(30, 1201, 30):
+    for threshold in range(15, 1201, 15):
         fn = sum(
             1 for e in events
             if e["outcome"] == "hit_after_gap" and e["gap"] is not None and e["gap"] > threshold
