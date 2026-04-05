@@ -185,6 +185,14 @@ http.createServer(function (req, res) {
     return;
   }
 
+  if (url === "/api/ai-config.json") {
+    var aiConfigPath = path.join(__dirname, "web", "ai-config.json");
+    var aiData = fs.readFileSync(aiConfigPath, "utf8");
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(aiData);
+    return;
+  }
+
   if (url.startsWith("/api/")) {
     res.writeHead(404);
     res.end("Not found");
