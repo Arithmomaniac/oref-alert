@@ -14,8 +14,10 @@ API quirks handled here:
 
 import json
 import logging
+import math
 import os
 import threading
+import time as _time
 from datetime import datetime, timedelta, timezone
 
 import azure.functions as func
@@ -26,6 +28,7 @@ from azure.storage.blob import BlobLeaseClient, BlobServiceClient, ContentSettin
 from analysis import (
     analyze_all_cities,
     compute_all_thresholds,
+    find_no_warning_sirens,
     load_csv_rows,
 )
 
@@ -277,12 +280,138 @@ def compute_city(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ---------------------------------------------------------------------------
+# Geolocation: /api/locate endpoint
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL = 3600  # 1 hour
+_polygon_cache = None
+_polygon_cache_ts = 0.0
+_cities_geo_cache = None
+_cities_geo_cache_ts = 0.0
+
+
+def _load_cached_polygons(container):
+    """Load polygon data from blob, caching in memory with TTL."""
+    global _polygon_cache, _polygon_cache_ts
+    now = _time.monotonic()
+    if _polygon_cache is not None and (now - _polygon_cache_ts) < _CACHE_TTL:
+        return _polygon_cache
+    data = _read_json_blob(container, "api/polygons.json", default={})
+    if data:  # only cache non-empty to avoid poisoning on transient errors
+        _polygon_cache = data
+        _polygon_cache_ts = now
+    return data
+
+
+def _load_cached_cities_geo(container):
+    """Load cities-geo data from blob, caching in memory with TTL."""
+    global _cities_geo_cache, _cities_geo_cache_ts
+    now = _time.monotonic()
+    if _cities_geo_cache is not None and (now - _cities_geo_cache_ts) < _CACHE_TTL:
+        return _cities_geo_cache
+    data = _read_json_blob(container, "api/cities-geo.json", default=[])
+    if data:
+        _cities_geo_cache = data
+        _cities_geo_cache_ts = now
+    return data
+
+
+def _point_in_polygon(point_lat: float, point_lng: float, polygon: list) -> bool:
+    """Ray-casting point-in-polygon test. Polygon is [[lat, lng], ...]."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        yi, xi = polygon[i]   # yi = lat, xi = lng
+        yj, xj = polygon[j]
+        if ((yi > point_lat) != (yj > point_lat)) and \
+           (point_lng < (xj - xi) * (point_lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+@app.function_name("locate_city")
+@app.route(route="locate", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def locate_city(req: func.HttpRequest) -> func.HttpResponse:
+    """Resolve lat/lng to a city using polygon containment, falling back to nearest city."""
+    lat_str = req.params.get("lat")
+    lng_str = req.params.get("lng")
+    if not lat_str or not lng_str:
+        return func.HttpResponse(
+            json.dumps({"error": "lat and lng query parameters are required"}),
+            status_code=400, mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    try:
+        lat = float(lat_str)
+        lng = float(lng_str)
+    except ValueError:
+        return func.HttpResponse(
+            json.dumps({"error": "lat and lng must be valid numbers"}),
+            status_code=400, mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    if not (math.isfinite(lat) and math.isfinite(lng)):
+        return func.HttpResponse(
+            json.dumps({"error": "lat and lng must be finite numbers"}),
+            status_code=400, mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return func.HttpResponse(
+            json.dumps({"error": "lat must be -90..90 and lng must be -180..180"}),
+            status_code=400, mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    container = _get_container_client()
+
+    # Try polygon containment first
+    polygons = _load_cached_polygons(container)
+    for city_name, polygon in polygons.items():
+        if _point_in_polygon(lat, lng, polygon):
+            return func.HttpResponse(
+                json.dumps({"city": city_name, "method": "polygon"}, ensure_ascii=False),
+                status_code=200, mimetype="application/json",
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+
+    # Fallback: nearest city by Euclidean distance
+    cities_geo = _load_cached_cities_geo(container)
+    best_name = None
+    best_dist = float("inf")
+    for c in cities_geo:
+        d = (c["lat"] - lat) ** 2 + (c["lng"] - lng) ** 2
+        if d < best_dist:
+            best_dist = d
+            best_name = c["name"]
+
+    if best_name:
+        return func.HttpResponse(
+            json.dumps({"city": best_name, "method": "nearest"}, ensure_ascii=False),
+            status_code=200, mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    return func.HttpResponse(
+        json.dumps({"error": "no city found"}),
+        status_code=404, mimetype="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # 2. Daily timer-triggered compute_thresholds
 # ---------------------------------------------------------------------------
 
 CSV_URL = "https://raw.githubusercontent.com/dleshem/israel-alerts-data/refs/heads/main/israel-alerts.csv"
 CITIES_MIX_URL = "https://alerts-history.oref.org.il/Shared/Ajax/GetCitiesMix.aspx"
 ELADNAVA_CITIES_URL = "https://raw.githubusercontent.com/eladnava/redalert-android/master/app/src/main/res/raw/cities.json"
+ELADNAVA_POLYGONS_URL = "https://raw.githubusercontent.com/eladnava/redalert-android/master/app/src/main/res/raw/polygons.json"
 
 
 @app.function_name("compute_thresholds")
@@ -334,6 +463,18 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
                          len(new_city_events),
                          sum(len(v) for v in new_city_events.values()))
 
+            # Find sirens without any preceding pre-alert
+            new_no_warning = find_no_warning_sirens(all_rows)
+            nw_store = gap_data.get("no_warning_sirens", {})
+            for city_name, new_events in new_no_warning.items():
+                existing_nw = nw_store.get(city_name, [])
+                seen_dates = {e["alert_date"] for e in existing_nw}
+                for ev in new_events:
+                    if ev["alert_date"] not in seen_dates:
+                        existing_nw.append(ev)
+                nw_store[city_name] = existing_nw
+            gap_data["no_warning_sirens"] = nw_store
+
             # Update watermarks
             if all_rows:
                 latest_dt = max(dt for dt, *_ in all_rows)
@@ -367,6 +508,8 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
     # Generate cities-geo.json (name → lat/lng) for browser geolocation → city lookup.
     # Only include cities whose names exactly match the canonical oref city list to avoid
     # mismatches (eladnava uses different apostrophe chars, etc.).
+    # Also build id→name mapping for polygon processing below.
+    eladnava_id_to_name = {}
     if labels is not None:
         try:
             resp = httpx.get(ELADNAVA_CITIES_URL, timeout=30.0)
@@ -376,10 +519,14 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
             geo_list = []
             for c in geo_cities:
                 name = c.get("name", "").strip()
+                cid = c.get("id")
                 lat = c.get("lat")
                 lng = c.get("lng")
-                if name and lat and lng and name in oref_set:
-                    geo_list.append({"name": name, "lat": lat, "lng": lng})
+                if name and name in oref_set:
+                    if cid is not None:
+                        eladnava_id_to_name[str(cid)] = name
+                    if lat and lng:
+                        geo_list.append({"name": name, "lat": lat, "lng": lng})
             _write_json_blob(container, "api/cities-geo.json", geo_list)
             logging.info(
                 "Refreshed cities-geo.json: %d/%d cities with coordinates",
@@ -387,3 +534,23 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
             )
         except Exception:
             logging.exception("Failed to refresh cities-geo.json — keeping previous version")
+
+    # Generate polygons.json (name → polygon coords) for server-side point-in-polygon.
+    # polygons.json from eladnava is keyed by numeric city ID; map to names via cities.json.
+    if eladnava_id_to_name:
+        try:
+            resp = httpx.get(ELADNAVA_POLYGONS_URL, timeout=30.0)
+            resp.raise_for_status()
+            raw_polygons = resp.json()
+            named_polygons = {}
+            for cid, coords in raw_polygons.items():
+                name = eladnava_id_to_name.get(str(cid))
+                if name and coords:
+                    named_polygons[name] = coords
+            _write_json_blob(container, "api/polygons.json", named_polygons)
+            logging.info(
+                "Refreshed polygons.json: %d/%d polygon entries mapped to oref cities",
+                len(named_polygons), len(raw_polygons),
+            )
+        except Exception:
+            logging.exception("Failed to refresh polygons.json — keeping previous version")

@@ -22,6 +22,7 @@ import httpx
 from analysis import (
     analyze_all_cities,
     compute_all_thresholds,
+    find_no_warning_sirens,
     load_csv_rows,
 )
 
@@ -63,11 +64,17 @@ def main():
     total_events = sum(len(v) for v in city_events.values())
     log.info("Analyzed %d cities (%d total events)", len(city_events), total_events)
 
+    # Find sirens without any preceding pre-alert
+    no_warning = find_no_warning_sirens(all_rows)
+    nw_total = sum(len(v) for v in no_warning.values())
+    log.info("No-warning sirens: %d cities (%d events)", len(no_warning), nw_total)
+
     # Build gap_data
     gap_data = {
         "watermark": (max(dt for dt, *_ in all_rows) - timedelta(hours=6)).isoformat() if all_rows else None,
         "last_rid": max_rid,
         "cities": city_events,
+        "no_warning_sirens": no_warning,
     }
 
     # Compute thresholds
