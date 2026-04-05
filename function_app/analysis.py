@@ -276,9 +276,10 @@ def compute_siren_timing_stats(events):
 
     return {
         "earliest_siren_seconds": round(values[0], 1),
-        "median_siren_seconds": round(median, 1),
         "p25_siren_seconds": round(values[max(0, n // 4)], 1),
+        "median_siren_seconds": round(median, 1),
         "p75_siren_seconds": round(values[min(n - 1, 3 * n // 4)], 1),
+        "latest_siren_seconds": round(values[-1], 1),
         "siren_timing_count": n,
     }
 

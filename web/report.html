@@ -52,6 +52,7 @@
 <p>Analysis of how long to wait after the first cohort siren before declaring &ldquo;missed us&rdquo; (כנראה עבר) for each city.
 <br>Based on historical pre-alert events from the
 <a href="https://github.com/dleshem/israel-alerts-data">israel-alerts-data</a> dataset.</p>
+<p id="last-updated" style="color:#999;font-size:13px"></p>
 <details>
 <summary style="cursor:pointer;color:#1976d2;font-weight:600">How it works</summary>
 <p style="margin:8px 0 4px">When a PRE_ALERT arrives, other cities in the same alert (&ldquo;cohort&rdquo;) may receive sirens. The threshold is the number of seconds after the <strong>first cohort siren</strong> to wait before declaring the event &ldquo;probably passed&rdquo; for the target city.</p>
@@ -135,6 +136,11 @@
     thresholdsData = results[1];
     document.getElementById("loading").style.display = "none";
     document.getElementById("content").style.display = "block";
+    if (thresholdsData.updated) {
+      var d = new Date(thresholdsData.updated);
+      document.getElementById("last-updated").textContent =
+        "Last updated: " + d.toLocaleString();
+    }
     initPickers();
     renderAll();
   }).catch(function(err) {
@@ -282,9 +288,10 @@
         : (preAlertToSiren[Math.floor(n / 2) - 1] + preAlertToSiren[Math.floor(n / 2)]) / 2;
       paSirenStats = {
         min: preAlertToSiren[0],
-        median: median,
         p25: preAlertToSiren[Math.max(0, Math.floor(n / 4))],
+        median: median,
         p75: preAlertToSiren[Math.min(n - 1, Math.floor(3 * n / 4))],
+        max: preAlertToSiren[n - 1],
         count: n
       };
     }
@@ -405,10 +412,11 @@
         timingHtml += '<div class="stat-card" style="border-top:3px solid ' + colors[i] + '">' +
           '<div class="label" style="margin-bottom:4px">' + c + '</div>' +
           '<div style="font-size:13px">' +
-            '<strong>Earliest:</strong> ' + fmtThresh(Math.round(pa.min)) + ' &nbsp; ' +
-            '<strong>Median:</strong> ' + fmtThresh(Math.round(pa.median)) + '<br>' +
+            '<strong>Min:</strong> ' + fmtThresh(Math.round(pa.min)) + ' &nbsp; ' +
             '<strong>P25:</strong> ' + fmtThresh(Math.round(pa.p25)) + ' &nbsp; ' +
-            '<strong>P75:</strong> ' + fmtThresh(Math.round(pa.p75)) + '<br>' +
+            '<strong>Median:</strong> ' + fmtThresh(Math.round(pa.median)) + '<br>' +
+            '<strong>P75:</strong> ' + fmtThresh(Math.round(pa.p75)) + ' &nbsp; ' +
+            '<strong>Max:</strong> ' + fmtThresh(Math.round(pa.max)) + '<br>' +
             '<span style="color:#999">' + pa.count + ' events where city got a siren</span>' +
           '</div></div>';
       }
