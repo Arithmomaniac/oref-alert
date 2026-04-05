@@ -91,12 +91,13 @@ jobs:
             --pattern "*.js" \
             --auth-mode login
 
-          # Upload JSON files (version.json)
-          az storage blob upload-batch \
+          # Upload version.json LAST (after HTML/JS) so clients don't
+          # see a new version before the new code is deployed.
+          az storage blob upload \
             --account-name "$STORAGE_ACCOUNT" \
-            --destination '$web' \
-            --source web/ \
+            --container-name '$web' \
+            --file web/version.json \
+            --name version.json \
             --overwrite \
             --content-type "application/json; charset=utf-8" \
-            --pattern "*.json" \
             --auth-mode login

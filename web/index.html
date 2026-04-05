@@ -40,7 +40,7 @@ body {
 #version-banner {
   display: none;
   position: fixed;
-  top: 0;
+  bottom: 0;
   left: 0;
   right: 0;
   padding: 0.8em 1em;
@@ -397,6 +397,25 @@ body {
   z-index: 100;
 }
 </style>
+<script src="https://js.monitor.azure.com/scripts/b/ai.3.gbl.min.js"></script>
+<script>
+(function() {
+  try {
+    fetch("/api/ai-config.json")
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(cfg) {
+        if (!cfg || !cfg.connectionString) return;
+        var ai = new Microsoft.ApplicationInsights.ApplicationInsights({
+          config: { connectionString: cfg.connectionString }
+        });
+        ai.loadAppInsights();
+        ai.trackPageView();
+        window.appInsights = ai;
+      })
+      .catch(function() {});
+  } catch(e) {}
+})();
+</script>
 </head>
 <body>
 
@@ -454,6 +473,11 @@ import * as engine from "./alert-engine.js";
   var LS_KEY = "oref_lastActivity";
   var VERSION_CHECK_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
+  // ── App Insights helper (fire-and-forget) ──────────────────
+  function trackAI(name, props) {
+    try { if (window.appInsights) window.appInsights.trackEvent({ name: name, properties: props }); } catch(e) {}
+  }
+
   // ── DOM refs ───────────────────────────────────────────────
   var elBody = document.body;
   var elCenter = document.getElementById("center");
@@ -485,7 +509,7 @@ import * as engine from "./alert-engine.js";
 
   // ── Version check ─────────────────────────────────────────
   function startVersionCheck() {
-    fetch("version.json?_=" + Date.now())
+    fetch("./version.json", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (data && data.version) {
@@ -497,7 +521,7 @@ import * as engine from "./alert-engine.js";
   }
 
   function checkVersion() {
-    fetch("version.json?_=" + Date.now())
+    fetch("./version.json", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (data && data.version && initialVersion && data.version !== initialVersion) {
@@ -596,6 +620,7 @@ import * as engine from "./alert-engine.js";
   function applyColor(color) {
     if (color === currentColor) return;
     currentColor = color;
+    trackAI("ColorTransition", { color: color });
     var info = COLOR_MAP[color];
     elBody.style.backgroundColor = info.bg;
     elStatus.textContent = info.label;
@@ -673,7 +698,8 @@ import * as engine from "./alert-engine.js";
     // Apply staleness warning
     if (result.staleWarning) {
       showWarning(result.staleWarning);
-    } else {
+      trackAI("StaleDataWarning");
+    }else {
       hideWarning();
     }
 
@@ -841,6 +867,7 @@ import * as engine from "./alert-engine.js";
             cityError.style.display = "block";
             return;
           }
+          trackAI("CitySelected", { city: val });
           window.location.search = "?city=" + encodeURIComponent(val);
         });
       }
@@ -853,6 +880,7 @@ import * as engine from "./alert-engine.js";
         locateBtn.style.display = "inline-block";
 
         locateBtn.addEventListener("click", function() {
+          trackAI("GeolocationUsed");
           locateBtn.disabled = true;
           locateBtn.textContent = "📍 מאתר...";
           locateError.style.display = "none";
