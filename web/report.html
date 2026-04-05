@@ -45,9 +45,14 @@
   .city-sug .sug:hover, .city-sug .sug.active { background: #e3f2fd; }
   .color-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
                 margin-right: 4px; vertical-align: middle; }
+  #version-banner { display: none; position: fixed; top: 0; left: 0; right: 0;
+                    padding: 0.8em 1em; background: rgba(33, 150, 243, 0.9);
+                    color: #fff; text-align: center; font-size: 14px;
+                    z-index: 101; cursor: pointer; }
 </style>
 </head>
 <body>
+<div id="version-banner">🔄 New version available — click to reload</div>
 <h1>Missed-Us Threshold Report (2026)</h1>
 <p>Analysis of how long to wait after the first cohort siren before declaring &ldquo;missed us&rdquo; (כנראה עבר) for each city.
 <br>Based on historical pre-alert events from the
@@ -87,9 +92,15 @@
   </div>
 
   <h2>Pre-Alert to Siren Distribution (30s bins)</h2>
-  <div class="summary" id="siren-timing-cards"></div>
+  <div id="siren-timing-cards"></div>
   <div class="chart-row">
     <div class="chart-box wide"><canvas id="preAlertHist"></canvas></div>
+  </div>
+
+  <h2>Sirens Without Pre-Alert</h2>
+  <div class="summary" id="no-warning-cards"></div>
+  <div class="chart-row">
+    <div class="chart-box wide"><canvas id="noWarningChart"></canvas></div>
   </div>
 
   <h2>False &ldquo;Missed Us&rdquo; Rate vs. Threshold</h2>
@@ -286,11 +297,18 @@
       var n = preAlertToSiren.length;
       var median = n % 2 === 1 ? preAlertToSiren[Math.floor(n / 2)]
         : (preAlertToSiren[Math.floor(n / 2) - 1] + preAlertToSiren[Math.floor(n / 2)]) / 2;
+      function percentile(arr, pct) {
+        var idx = pct / 100 * (arr.length - 1);
+        var lo = Math.floor(idx), hi = Math.min(lo + 1, arr.length - 1);
+        return arr[lo] + (idx - lo) * (arr[hi] - arr[lo]);
+      }
       paSirenStats = {
         min: preAlertToSiren[0],
-        p25: preAlertToSiren[Math.max(0, Math.floor(n / 4))],
+        p5: percentile(preAlertToSiren, 5),
+        p25: percentile(preAlertToSiren, 25),
         median: median,
-        p75: preAlertToSiren[Math.min(n - 1, Math.floor(3 * n / 4))],
+        p75: percentile(preAlertToSiren, 75),
+        p95: percentile(preAlertToSiren, 95),
         max: preAlertToSiren[n - 1],
         count: n
       };
@@ -404,25 +422,63 @@
     for (var pb = 0; pb <= maxPa + 30; pb += 30) paBins.push(pb);
     var paBinLabels = paBins.map(fmtThresh);
 
-    // Siren timing stat cards
-    var timingHtml = "";
-    selected.forEach(function(c, i) {
-      var pa = stats[c].paSirenStats;
-      if (pa) {
-        timingHtml += '<div class="stat-card" style="border-top:3px solid ' + colors[i] + '">' +
-          '<div class="label" style="margin-bottom:4px">' + c + '</div>' +
-          '<div style="font-size:13px">' +
-            '<strong>Min:</strong> ' + fmtThresh(Math.round(pa.min)) + ' &nbsp; ' +
-            '<strong>P25:</strong> ' + fmtThresh(Math.round(pa.p25)) + ' &nbsp; ' +
-            '<strong>Median:</strong> ' + fmtThresh(Math.round(pa.median)) + '<br>' +
-            '<strong>P75:</strong> ' + fmtThresh(Math.round(pa.p75)) + ' &nbsp; ' +
-            '<strong>Max:</strong> ' + fmtThresh(Math.round(pa.max)) + '<br>' +
-            '<span style="color:#999">' + pa.count + ' events where city got a siren</span>' +
-          '</div></div>';
-      }
-    });
-    document.getElementById("siren-timing-cards").innerHTML = timingHtml ||
-      '<p style="color:#999">No pre-alert-to-siren timing data available.</p>';
+    // Siren timing — box-and-whisker number line
+    var timingContainer = document.getElementById("siren-timing-cards");
+    var hasTimingData = selected.some(function(c) { return stats[c].paSirenStats; });
+    if (hasTimingData) {
+      // Find global min/max across all selected cities for scale
+      var globalMin = Infinity, globalMax = 0;
+      selected.forEach(function(c) {
+        var pa = stats[c].paSirenStats;
+        if (pa) {
+          globalMin = Math.min(globalMin, pa.min);
+          globalMax = Math.max(globalMax, pa.max);
+        }
+      });
+      var range = globalMax - globalMin || 1;
+      var pad = range * 0.05;
+      var scaleMin = Math.max(0, globalMin - pad);
+      var scaleMax = globalMax + pad;
+      var scaleRange = scaleMax - scaleMin || 1;
+
+      function pct(val) { return ((val - scaleMin) / scaleRange * 100).toFixed(1); }
+
+      var html = '';
+      selected.forEach(function(c, i) {
+        var pa = stats[c].paSirenStats;
+        if (!pa) return;
+        var color = colors[i];
+        html += '<div class="chart-box" style="margin-bottom:12px;padding:16px 24px;border-left:4px solid ' + color + '">';
+        html += '<div style="font-weight:600;margin-bottom:8px">' + c + ' <span style="color:#999;font-weight:400;font-size:12px">(' + pa.count + ' events)</span></div>';
+        // Number line container
+        html += '<div style="position:relative;height:40px;margin:8px 0 4px">';
+        // Whisker line: P5 to P95
+        html += '<div style="position:absolute;top:18px;height:4px;background:' + color + '33;left:' + pct(pa.p5) + '%;width:' + (pct(pa.p95) - pct(pa.p5)).toFixed(1) + '%"></div>';
+        // Box: P25 to P75
+        html += '<div style="position:absolute;top:10px;height:20px;background:' + color + '55;border:2px solid ' + color + ';border-radius:4px;left:' + pct(pa.p25) + '%;width:' + (pct(pa.p75) - pct(pa.p25)).toFixed(1) + '%"></div>';
+        // Median line
+        html += '<div style="position:absolute;top:8px;height:24px;width:3px;background:' + color + ';left:' + pct(pa.median) + '%"></div>';
+        // Min whisker cap
+        html += '<div style="position:absolute;top:14px;height:12px;width:2px;background:' + color + '66;left:' + pct(pa.min) + '%"></div>';
+        // Max whisker cap
+        html += '<div style="position:absolute;top:14px;height:12px;width:2px;background:' + color + '66;left:' + pct(pa.max) + '%"></div>';
+        html += '</div>';
+        // Labels
+        html += '<div style="display:flex;justify-content:space-between;font-size:11px;color:#777;margin-top:2px">';
+        html += '<span>Min ' + fmtThresh(Math.round(pa.min)) + '</span>';
+        html += '<span>P5 ' + fmtThresh(Math.round(pa.p5)) + '</span>';
+        html += '<span>P25 ' + fmtThresh(Math.round(pa.p25)) + '</span>';
+        html += '<span style="font-weight:600;color:#333">Median ' + fmtThresh(Math.round(pa.median)) + '</span>';
+        html += '<span>P75 ' + fmtThresh(Math.round(pa.p75)) + '</span>';
+        html += '<span>P95 ' + fmtThresh(Math.round(pa.p95)) + '</span>';
+        html += '<span>Max ' + fmtThresh(Math.round(pa.max)) + '</span>';
+        html += '</div>';
+        html += '</div>';
+      });
+      timingContainer.innerHTML = html;
+    } else {
+      timingContainer.innerHTML = '<p style="color:#999">No pre-alert-to-siren timing data available.</p>';
+    }
 
     if (allPaTimes.length > 0) {
       charts.preAlertHist = new Chart(document.getElementById("preAlertHist"), {
@@ -529,6 +585,34 @@
     tableHtml += '</table>';
     document.getElementById("threshold-table").innerHTML = tableHtml;
   }
+})();
+</script>
+<script>
+(function () {
+  var VERSION_CHECK_INTERVAL = 30 * 60 * 1000;
+  var initialVersion = null;
+  var banner = document.getElementById("version-banner");
+
+  banner.addEventListener("click", function () { location.reload(); });
+
+  fetch("version.json?_=" + Date.now())
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (data) {
+      if (data && data.version) {
+        initialVersion = data.version;
+        setInterval(function () {
+          fetch("version.json?_=" + Date.now())
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) {
+              if (d && d.version && initialVersion && d.version !== initialVersion) {
+                banner.style.display = "block";
+              }
+            })
+            .catch(function () {});
+        }, VERSION_CHECK_INTERVAL);
+      }
+    })
+    .catch(function () {});
 })();
 </script>
 </body>

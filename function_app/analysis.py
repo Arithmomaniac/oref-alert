@@ -274,14 +274,86 @@ def compute_siren_timing_stats(events):
     else:
         median = (values[n // 2 - 1] + values[n // 2]) / 2
 
+    def percentile(vals, pct):
+        idx = pct / 100 * (len(vals) - 1)
+        lo = int(idx)
+        hi = min(lo + 1, len(vals) - 1)
+        frac = idx - lo
+        return vals[lo] + frac * (vals[hi] - vals[lo])
+
     return {
         "earliest_siren_seconds": round(values[0], 1),
-        "p25_siren_seconds": round(values[max(0, n // 4)], 1),
+        "p5_siren_seconds": round(percentile(values, 5), 1),
+        "p25_siren_seconds": round(percentile(values, 25), 1),
         "median_siren_seconds": round(median, 1),
-        "p75_siren_seconds": round(values[min(n - 1, 3 * n // 4)], 1),
+        "p75_siren_seconds": round(percentile(values, 75), 1),
+        "p95_siren_seconds": round(percentile(values, 95), 1),
         "latest_siren_seconds": round(values[-1], 1),
         "siren_timing_count": n,
     }
+
+
+def find_no_warning_sirens(all_rows):
+    """Find siren events with no preceding pre-alert within EVENT_WINDOW_MIN.
+
+    For each siren row (category in HIST_ALERT_CATEGORIES), checks whether any
+    PRE_ALERT in the preceding EVENT_WINDOW_MIN minutes covered each city in
+    that siren's areas.  A city is "covered" when a pre-alert area is a
+    substring of the siren area (consistent with city_matches).
+
+    Returns dict: ``{city_name: [{"alert_date": str, "category": int}]}``.
+    Each city+alert_date pair appears at most once (event-level metric).
+    """
+    window = timedelta(minutes=EVENT_WINDOW_MIN)
+
+    # Collect pre-alert rows (already sorted since all_rows is sorted)
+    pre_alerts = [
+        (dt, areas) for dt, cat, areas, _ad in all_rows
+        if cat == PRE_ALERT_CATEGORY
+    ]
+
+    no_warning = defaultdict(list)
+    seen = defaultdict(set)  # city -> set of alert_dates already recorded
+    pa_start = 0  # sliding-window pointer into pre_alerts
+
+    for siren_dt, cat, areas, alert_date in all_rows:
+        if cat not in HIST_ALERT_CATEGORIES:
+            continue
+
+        window_start = siren_dt - window
+
+        # Advance the sliding-window pointer past expired pre-alerts.
+        # We can't advance past pre-alerts that might still be in range for
+        # *future* siren rows, so we only skip those strictly before the
+        # window of the *current* siren.
+        while pa_start < len(pre_alerts) and pre_alerts[pa_start][0] < window_start:
+            pa_start += 1
+
+        for area in areas:
+            city = area.strip()
+            if alert_date in seen[city]:
+                continue
+
+            covered = False
+            for j in range(pa_start, len(pre_alerts)):
+                pa_dt, pa_areas = pre_alerts[j]
+                if pa_dt > siren_dt:
+                    break
+                for pa_area in pa_areas:
+                    if city_matches(city, pa_area.strip()):
+                        covered = True
+                        break
+                if covered:
+                    break
+
+            if not covered:
+                seen[city].add(alert_date)
+                no_warning[city].append({
+                    "alert_date": alert_date,
+                    "category": cat,
+                })
+
+    return dict(no_warning)
 
 
 def compute_all_thresholds(gap_data, target_fn_rate=0.05):
@@ -308,5 +380,16 @@ def compute_all_thresholds(gap_data, target_fn_rate=0.05):
         if timing:
             city_thresh.update(timing)
         thresholds["cities"][city_name] = city_thresh
+
+    # Include no-warning sirens summary
+    no_warning_raw = gap_data.get("no_warning_sirens", {})
+    if no_warning_raw:
+        thresholds["no_warning_sirens"] = {
+            city_name: {
+                "count": len(events),
+                "events": events,
+            }
+            for city_name, events in no_warning_raw.items()
+        }
 
     return thresholds
