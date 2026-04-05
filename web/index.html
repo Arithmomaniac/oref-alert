@@ -401,7 +401,7 @@ body {
 <script>
 (function() {
   try {
-    fetch("/api/ai-config.json")
+    fetch("./ai-config.json")
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(cfg) {
         if (!cfg || !cfg.connectionString) return;
@@ -514,10 +514,10 @@ import * as engine from "./alert-engine.js";
       .then(function (data) {
         if (data && data.version) {
           initialVersion = data.version;
-          setInterval(checkVersion, VERSION_CHECK_INTERVAL);
         }
       })
       .catch(function () {});
+    setInterval(checkVersion, VERSION_CHECK_INTERVAL);
   }
 
   function checkVersion() {
@@ -889,7 +889,7 @@ import * as engine from "./alert-engine.js";
             function onSuccess(pos) {
               var myLat = pos.coords.latitude;
               var myLng = pos.coords.longitude;
-              fetch("/api/locate?lat=" + myLat + "&lng=" + myLng)
+              fetch(FUNC_API + "/locate?lat=" + myLat + "&lng=" + myLng)
                 .then(function(r) {
                   if (!r.ok) throw new Error("HTTP " + r.status);
                   return r.json();

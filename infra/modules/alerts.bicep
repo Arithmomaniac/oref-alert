@@ -41,13 +41,7 @@ resource functionFailureAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15
     criteria: {
       allOf: [
         {
-          query: '''
-            requests
-            | where success == false
-            | where cloud_RoleName =~ "${functionAppName}"
-            | project timestamp, name, resultCode, duration, id
-            | summarize failureCount = count(), functions = strcat_array(make_set(name, 10), ', '), lastResultCode = take_any(resultCode) by bin(timestamp, 5m)
-          '''
+          query: 'requests | where success == false | project timestamp, name, resultCode, duration, id | summarize failureCount = count(), functions = strcat_array(make_set(name, 10), \', \'), lastResultCode = take_any(resultCode) by bin(timestamp, 5m)'
           timeAggregation: 'Count'
           operator: 'GreaterThan'
           threshold: 0
@@ -84,13 +78,7 @@ resource errorLogAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15-previe
     criteria: {
       allOf: [
         {
-          query: '''
-            traces
-            | where severityLevel >= 3
-            | where cloud_RoleName =~ "${functionAppName}"
-            | project timestamp, message = substring(message, 0, 200)
-            | summarize errorCount = count(), errors = strcat_array(make_set(message, 10), ' | ') by bin(timestamp, 15m)
-          '''
+          query: 'traces | where severityLevel >= 3 | project timestamp, message = substring(message, 0, 200) | summarize errorCount = count(), errors = strcat_array(make_set(message, 10), \' | \') by bin(timestamp, 15m)'
           timeAggregation: 'Count'
           operator: 'GreaterThan'
           threshold: 0
@@ -126,12 +114,7 @@ resource clientExceptionAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15
     criteria: {
       allOf: [
         {
-          query: '''
-            exceptions
-            | where client_Type == "Browser"
-            | project timestamp, type, outerMessage = substring(outerMessage, 0, 200)
-            | summarize exceptionCount = count(), types = strcat_array(make_set(type, 10), ', ') by bin(timestamp, 15m)
-          '''
+          query: 'exceptions | where client_Type == "Browser" | project timestamp, type, outerMessage = substring(outerMessage, 0, 200) | summarize exceptionCount = count(), types = strcat_array(make_set(type, 10), \', \') by bin(timestamp, 15m)'
           timeAggregation: 'Count'
           operator: 'GreaterThan'
           threshold: 0

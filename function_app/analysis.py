@@ -293,7 +293,7 @@ def compute_siren_timing_stats(events):
     }
 
 
-def find_no_warning_sirens(all_rows):
+def find_no_warning_sirens(all_rows, *, skip_initial_window: bool = False):
     """Find siren events with no preceding pre-alert within EVENT_WINDOW_MIN.
 
     For each siren row (category in HIST_ALERT_CATEGORIES), checks whether any
@@ -301,10 +301,19 @@ def find_no_warning_sirens(all_rows):
     that siren's areas.  A city is "covered" when a pre-alert area is a
     substring of the siren area (consistent with city_matches).
 
+    When *skip_initial_window* is True, sirens in the first EVENT_WINDOW_MIN
+    minutes of the data are ignored — their preceding pre-alerts may have been
+    truncated by incremental loading.
+
     Returns dict: ``{city_name: [{"alert_date": str, "category": int}]}``.
     Each city+alert_date pair appears at most once (event-level metric).
     """
     window = timedelta(minutes=EVENT_WINDOW_MIN)
+
+    # Determine the earliest timestamp we can safely evaluate
+    safe_after = None
+    if skip_initial_window and all_rows:
+        safe_after = all_rows[0][0] + window
 
     # Collect pre-alert rows (already sorted since all_rows is sorted)
     pre_alerts = [
@@ -318,6 +327,10 @@ def find_no_warning_sirens(all_rows):
 
     for siren_dt, cat, areas, alert_date in all_rows:
         if cat not in HIST_ALERT_CATEGORIES:
+            continue
+
+        # Skip sirens in the lookback-unsafe window at the start of the batch
+        if safe_after is not None and siren_dt < safe_after:
             continue
 
         window_start = siren_dt - window

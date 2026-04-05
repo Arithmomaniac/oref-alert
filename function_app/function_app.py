@@ -463,8 +463,12 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
                          len(new_city_events),
                          sum(len(v) for v in new_city_events.values()))
 
-            # Find sirens without any preceding pre-alert
-            new_no_warning = find_no_warning_sirens(all_rows)
+            # Find sirens without any preceding pre-alert.
+            # skip_initial_window=True avoids false positives at batch
+            # boundaries where a pre-alert may have been in the prior batch.
+            new_no_warning = find_no_warning_sirens(
+                all_rows, skip_initial_window=(last_rid is not None),
+            )
             nw_store = gap_data.get("no_warning_sirens", {})
             for city_name, new_events in new_no_warning.items():
                 existing_nw = nw_store.get(city_name, [])

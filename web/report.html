@@ -54,7 +54,7 @@
 <script>
 (function() {
   try {
-    fetch("/api/ai-config.json")
+    fetch("./ai-config.json")
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(cfg) {
         if (!cfg || !cfg.connectionString) return;
@@ -547,12 +547,12 @@
       data: {
         labels: selected,
         datasets: [
-          { label: "With pre-alert", data: preAlertedCounts, backgroundColor: "#4CAF50CC" },
-          { label: "No pre-alert", data: noWarningCounts, backgroundColor: "#FF5722CC" }
+          { label: "Siren timing events (with pre-alert)", data: preAlertedCounts, backgroundColor: "#4CAF50CC" },
+          { label: "Sirens without pre-alert", data: noWarningCounts, backgroundColor: "#FF5722CC" }
         ]
       },
       options: {
-        plugins: { title: { display: true, text: "Pre-Alerted vs. No-Warning Siren Events" } },
+        plugins: { title: { display: true, text: "Siren Events: With vs. Without Pre-Alert" } },
         scales: { y: { title: { display: true, text: "Count" } } }
       }
     });
@@ -654,19 +654,19 @@
     .then(function (data) {
       if (data && data.version) {
         initialVersion = data.version;
-        setInterval(function () {
-          fetch("./version.json", { cache: "no-store" })
-            .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (d) {
-              if (d && d.version && initialVersion && d.version !== initialVersion) {
-                banner.style.display = "block";
-              }
-            })
-            .catch(function () {});
-        }, VERSION_CHECK_INTERVAL);
       }
     })
     .catch(function () {});
+  setInterval(function () {
+    fetch("./version.json", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (d && d.version && initialVersion && d.version !== initialVersion) {
+          banner.style.display = "block";
+        }
+      })
+      .catch(function () {});
+  }, VERSION_CHECK_INTERVAL);
 })();
 </script>
 </body>
