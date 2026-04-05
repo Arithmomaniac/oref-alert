@@ -36,6 +36,22 @@ body {
   cursor: pointer;
 }
 
+/* --- Version update banner --- */
+#version-banner {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0.8em 1em;
+  background: rgba(33, 150, 243, 0.9);
+  color: #fff;
+  text-align: center;
+  font-size: clamp(0.7rem, 1.8vmin, 2vw);
+  z-index: 101;
+  cursor: pointer;
+}
+
 /* --- Connection / stale warning --- */
 #conn-warning {
   display: none;
@@ -385,6 +401,7 @@ body {
 <body>
 
 <div id="session-banner">⚠ תוקף הפעלה יפוג מחר — לחצו בכל מקום כדי להאריך</div>
+<div id="version-banner">🔄 גרסה חדשה זמינה — לחצו לטעינה מחדש</div>
 <div id="conn-warning"></div>
 <div id="invalid-city"></div>
 
@@ -435,6 +452,7 @@ import * as engine from "./alert-engine.js";
   var SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
   var SESSION_WARN_MS = 6 * 24 * 60 * 60 * 1000;
   var LS_KEY = "oref_lastActivity";
+  var VERSION_CHECK_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
   // ── DOM refs ───────────────────────────────────────────────
   var elBody = document.body;
@@ -449,6 +467,7 @@ import * as engine from "./alert-engine.js";
   var elNoCity = document.getElementById("no-city");
   var elConnWarn = document.getElementById("conn-warning");
   var elBanner = document.getElementById("session-banner");
+  var elVersionBanner = document.getElementById("version-banner");
   var elExpired = document.getElementById("expired-overlay");
   var elHelpBtn = document.getElementById("help-btn");
   var elBackBtn = document.getElementById("back-btn");
@@ -462,6 +481,35 @@ import * as engine from "./alert-engine.js";
   var sessionExpired = false;
   var lastThresholdFetch = 0;
   var knownCities = null;
+  var initialVersion = null;
+
+  // ── Version check ─────────────────────────────────────────
+  function startVersionCheck() {
+    fetch("version.json?_=" + Date.now())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (data && data.version) {
+          initialVersion = data.version;
+          setInterval(checkVersion, VERSION_CHECK_INTERVAL);
+        }
+      })
+      .catch(function () {});
+  }
+
+  function checkVersion() {
+    fetch("version.json?_=" + Date.now())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (data && data.version && initialVersion && data.version !== initialVersion) {
+          elVersionBanner.style.display = "block";
+        }
+      })
+      .catch(function () {});
+  }
+
+  elVersionBanner.addEventListener("click", function () {
+    location.reload();
+  });
 
   // ── Parse city from query string ───────────────────────────
   function getCity() {
@@ -813,32 +861,20 @@ import * as engine from "./alert-engine.js";
             function onSuccess(pos) {
               var myLat = pos.coords.latitude;
               var myLng = pos.coords.longitude;
-              fetch("/api/cities-geo.json")
+              fetch("/api/locate?lat=" + myLat + "&lng=" + myLng)
                 .then(function(r) {
                   if (!r.ok) throw new Error("HTTP " + r.status);
                   return r.json();
                 })
-                .then(function(cities) {
-                  // Find nearest city by Euclidean approximation (accurate enough for Israel's scale)
-                  var best = null;
-                  var bestDist = Infinity;
-                  for (var i = 0; i < cities.length; i++) {
-                    var dLat = cities[i].lat - myLat;
-                    var dLng = cities[i].lng - myLng;
-                    var dist = dLat * dLat + dLng * dLng;
-                    if (dist < bestDist) {
-                      bestDist = dist;
-                      best = cities[i].name;
-                    }
-                  }
-                  if (best) {
-                    window.location.search = "?city=" + encodeURIComponent(best);
+                .then(function(data) {
+                  if (data.city) {
+                    window.location.search = "?city=" + encodeURIComponent(data.city);
                   } else {
                     showLocateError("לא נמצאה עיר קרובה");
                   }
                 })
                 .catch(function() {
-                  showLocateError("שגיאה בטעינת נתוני ערים");
+                  showLocateError("שגיאה באיתור עיר");
                 });
             },
             function onError(err) {
@@ -929,6 +965,9 @@ import * as engine from "./alert-engine.js";
     // Start polling — first poll also rebuilds recent history
     poll();
     pollTimer = setInterval(poll, POLL_INTERVAL);
+
+    // Start version checking
+    startVersionCheck();
   }
 
   init();

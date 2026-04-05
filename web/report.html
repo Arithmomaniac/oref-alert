@@ -503,6 +503,41 @@
       });
     }
 
+    // No-warning sirens section
+    var nwData = thresholdsData.no_warning_sirens || {};
+    var nwCardsHtml = "";
+    selected.forEach(function(c, i) {
+      var nw = nwData[c];
+      var nwCount = nw ? nw.count : 0;
+      nwCardsHtml += '<div class="stat-card" style="border-top:3px solid ' + colors[i] + '">' +
+        '<div class="num">' + nwCount + '</div>' +
+        '<div class="label">' + c + '</div>' +
+        '<div style="margin-top:4px;font-size:12px;color:#999">sirens with no pre-alert</div>' +
+        '</div>';
+    });
+    document.getElementById("no-warning-cards").innerHTML = nwCardsHtml;
+
+    var preAlertedCounts = selected.map(function(c) { return stats[c].total; });
+    var noWarningCounts = selected.map(function(c) {
+      var nw = nwData[c];
+      return nw ? nw.count : 0;
+    });
+
+    charts.noWarning = new Chart(document.getElementById("noWarningChart"), {
+      type: "bar",
+      data: {
+        labels: selected,
+        datasets: [
+          { label: "With pre-alert", data: preAlertedCounts, backgroundColor: "#4CAF50CC" },
+          { label: "No pre-alert", data: noWarningCounts, backgroundColor: "#FF5722CC" }
+        ]
+      },
+      options: {
+        plugins: { title: { display: true, text: "Pre-Alerted vs. No-Warning Siren Events" } },
+        scales: { y: { title: { display: true, text: "Count" } } }
+      }
+    });
+
     // FN rate chart
     var threshLabels = stats[selected[0]].thresholdValues.map(fmtThresh);
     var maxUseful = 0;

@@ -63,6 +63,9 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Stamp version with git SHA
+        run: echo '{"version":"${{ github.sha }}"}' > web/version.json
+
       - name: Deploy web to blob storage
         run: |
           STORAGE_ACCOUNT="${AZURE_FUNCTIONAPP_NAME/-func/}st"
@@ -86,4 +89,14 @@ jobs:
             --overwrite \
             --content-type "application/javascript; charset=utf-8" \
             --pattern "*.js" \
+            --auth-mode login
+
+          # Upload JSON files (version.json)
+          az storage blob upload-batch \
+            --account-name "$STORAGE_ACCOUNT" \
+            --destination '$web' \
+            --source web/ \
+            --overwrite \
+            --content-type "application/json; charset=utf-8" \
+            --pattern "*.json" \
             --auth-mode login
