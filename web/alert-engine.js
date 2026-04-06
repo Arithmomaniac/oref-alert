@@ -55,6 +55,7 @@ export function createState(opts) {
     lastRtKeys: new Set(),
     eventLog: [],
     stableThresholdMs: opts.stableThresholdMs != null ? opts.stableThresholdMs : null,
+    p5SirenMs: opts.p5SirenMs != null ? opts.p5SirenMs : null,
     thresholdsData: opts.thresholdsData || null,
     firstPoll: true,
   };
@@ -143,6 +144,10 @@ export function getColor(rec, es, nowMs) {
         es.sirenCohortCities.size > 0 && es.firstCohortSirenMs !== null &&
         (nowMs - es.firstCohortSirenMs) >= es.stableThresholdMs) {
       return "likely_passed";
+    }
+    if (es.p5SirenMs !== null && rec.time != null &&
+        (nowMs - rec.time * 1000) >= es.p5SirenMs) {
+      return "siren_window";
     }
     return "pre_alert";
   }
@@ -331,7 +336,7 @@ export function processState(state, es, city, nowMs) {
     }
   }
 
-  // ── Post-history likely_passed check (mirrors Pass 2 transition event) ──
+  // ── Post-history amber check (mirrors Pass 2 transition event) ──
   if (es.cohortCities.size > 0 && es.currentRecord && es.currentRecord.type === PRE_ALERT) {
     var postHistColor = getColor(es.currentRecord, es, nowMs);
     if (postHistColor === "likely_passed") {

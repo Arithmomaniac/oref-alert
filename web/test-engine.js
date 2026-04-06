@@ -70,7 +70,7 @@ console.log("\n1. Happy path — real-time amber");
     { cat: "1", title: "ירי רקטות וטילים", data: COHORT },
   ]);
   var r2 = engine.processState(state2, es, CITY, now);
-  assertColor(r2, "pre_alert", "sirens just started → still yellow (threshold not met)");
+  assertColor(r2, "pre_alert", "sirens just started → still pre_alert (threshold not met)");
   assert(es.sirenCohortCities.size === 3, "all 3 cohort cities detected");
 
   // Poll 3: 240s later — threshold elapsed
@@ -270,7 +270,7 @@ console.log("\n8. History PRE_ALERT with no cohort sirens → pre_alert (no fals
     ],
   );
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "pre_alert", "history cohort but no sirens → stays yellow");
+  assertColor(r1, "pre_alert", "history cohort but no sirens → stays pre_alert");
   assert(es.cohortCities.size === 2, "cohortCities reconstructed (2 cohort cities)");
   assert(es.sirenCohortCities.size === 0, "sirenCohortCities empty (no sirens in history)");
 }
@@ -289,10 +289,13 @@ console.log("\n9. Thresholds data with siren timing stats accessible on pre-aler
         events: 42,
         fn_rate: 0.023,
         earliest_siren_seconds: 180,
-        median_siren_seconds: 360,
+        p5_siren_seconds: 120,
         p25_siren_seconds: 210,
+        median_siren_seconds: 360,
         p75_siren_seconds: 480,
-        siren_timing_count: 35,
+        siren_hit_count: 35,
+        total_pre_alert_events: 42,
+        siren_hit_rate: 0.83,
       },
     },
   };
@@ -305,7 +308,7 @@ console.log("\n9. Thresholds data with siren timing stats accessible on pre-aler
       data: [CITY, ...COHORT] },
   ]);
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "pre_alert", "PRE_ALERT → yellow with thresholds data");
+  assertColor(r1, "pre_alert", "PRE_ALERT → pre_alert with thresholds data");
 
   // Verify thresholds data is accessible
   var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[CITY];
@@ -319,6 +322,32 @@ console.log("\n9. Thresholds data with siren timing stats accessible on pre-aler
   var expectedTimeMs = es.currentRecord.time * 1000 + ci.earliest_siren_seconds * 1000;
   var expectedDate = new Date(expectedTimeMs);
   assert(!isNaN(expectedDate.getTime()), "as-soon-as time computes to valid date");
+}
+
+// ── Test 10: siren_window state — triggered at P5 threshold ──
+
+console.log("\n10. siren_window — triggered at P5 threshold");
+{
+  var es = engine.createState({ stableThresholdMs: 240000, p5SirenMs: 60000 }); // stable=240s, P5=60s
+  var preAlertTime = tMs("09:00:00");
+
+  // Poll 1: PRE_ALERT at t=0 → pre_alert (before P5)
+  var state1 = makeStateJson([
+    { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: [CITY, ...COHORT] },
+  ], [], "2026-04-01T09:00:01Z");
+  var r1 = engine.processState(state1, es, CITY, preAlertTime + 10000); // t+10s
+  assertColor(r1, "pre_alert", "t+10s before P5(60s) → pre_alert");
+
+  // Poll 2: t+90s → P5 elapsed, no cohort sirens yet → siren_window
+  var r2 = engine.processState(state1, es, CITY, preAlertTime + 90000); // t+90s
+  assertColor(r2, "siren_window", "t+90s after P5(60s), no cohort sirens → siren_window");
+
+  // Poll 3: cohort sirens arrive and stable threshold elapses → likely_passed takes priority
+  es.sirenCohortCities = new Set(["תל אביב - דרום העיר ויפו"]);
+  es.firstCohortSirenMs = preAlertTime + 30000;
+  var r3 = engine.processState(state1, es, CITY, preAlertTime + 30000 + 250000); // 250s after first siren
+  assertColor(r3, "likely_passed", "likely_passed takes priority over siren_window when stable elapsed");
 }
 
 // ── Summary ──

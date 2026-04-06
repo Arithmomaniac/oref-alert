@@ -16,13 +16,14 @@ const CITY = "בית שמש";
  * Start a local HTTP server that serves index.html and mock API responses.
  * fixtureFile controls what /api/state.json returns.
  * thresholds are always returned with a 0s threshold for the test city
- * (so likely_passed triggers immediately when conditions are met).
+ * (so amber triggers immediately when conditions are met).
  */
 function startMockServer(fixtureFile) {
   const stateData = fs.readFileSync(path.join(FIXTURES_DIR, fixtureFile), "utf-8");
 
-  // Thresholds: 0s for amber test (immediate trigger), 240s otherwise
-  const isLikelyPassed = fixtureFile.includes("likely_passed");
+  // Thresholds: differentiate fixture types for threshold values
+  const isLikelyPassed = fixtureFile === "state-likely_passed.json";  // likely_passed: stable=0
+  const isSirenWindow = fixtureFile.includes("siren_window"); // siren_window: p5=0
   const thresholds = JSON.stringify({
     updated: new Date().toISOString(),
     default_stable_seconds: 300,
@@ -30,13 +31,16 @@ function startMockServer(fixtureFile) {
     cities: {
       [CITY]: {
         stable_seconds: isLikelyPassed ? 0 : 240,
-        events: 100,
-        fn_rate: 0.0,
+        p5_siren_seconds: isSirenWindow ? 0 : 60,
         earliest_siren_seconds: 180,
-        median_siren_seconds: 360,
         p25_siren_seconds: 210,
+        median_siren_seconds: 360,
         p75_siren_seconds: 480,
-        siren_timing_count: 80,
+        p95_siren_seconds: 600,
+        latest_siren_seconds: 900,
+        siren_hit_count: 72,
+        total_pre_alert_events: 100,
+        siren_hit_rate: 0.72,
       },
     },
   });
@@ -99,9 +103,10 @@ function startMockServer(fixtureFile) {
 }
 
 const EXPECTED = {
-  green:  { bg: "rgb(0, 200, 83)",  text: "הכל תקין" },
-  pre_alert: { bg: "rgb(249, 168, 37)", text: "התראה מוקדמת" },
-  red:    { bg: "rgb(213, 0, 0)",    text: "!אזעקה" },      // note: RTL, "!" first in DOM
+  green:        { bg: "rgb(0, 200, 83)",   text: "הכל תקין" },
+  pre_alert:    { bg: "rgb(249, 168, 37)", text: "התראה מוקדמת" },
+  siren_window: { bg: "rgb(245, 124, 0)",  text: "התראה מוקדמת" },
+  red:          { bg: "rgb(213, 0, 0)",    text: "!אזעקה" },
   likely_passed: { bg: "rgb(255, 171, 0)",  text: "כנראה עבר" },
 };
 
@@ -112,6 +117,7 @@ test.describe("Alert display color states", () => {
   for (const [color, fixture] of [
     ["green", "state-green.json"],
     ["pre_alert", "state-pre_alert.json"],
+    ["siren_window", "state-siren_window.json"],
     ["red", "state-red.json"],
     ["likely_passed", "state-likely_passed.json"],
   ]) {
@@ -129,7 +135,7 @@ test.describe("Alert display color states", () => {
         // Wait for at least one poll cycle (5s) + rendering
         await page.waitForTimeout(7000);
 
-        // For likely_passed: need a second poll so getColor evaluates with stable threshold elapsed
+        // For likely_passed: need a second poll so stable threshold elapses
         if (color === "likely_passed") {
           await page.waitForTimeout(6000);
         }
@@ -183,14 +189,13 @@ test.describe("Pre-alert 'as soon as' info", () => {
       );
       expect(bg).toBe(EXPECTED.pre_alert.bg);
 
-      // Verify the pre-alert-info element is visible and contains "as soon as" data
+      // Verify the pre-alert-info element is visible and contains the inline one-liner
       const preAlertInfo = page.locator("#pre-alert-info");
       await expect(preAlertInfo).toBeVisible();
 
-      // Should contain the Hebrew text for "historically, sirens arrive..."
+      // Should contain the Hebrew "not expected before X (≈HH:MM)" text
       const text = await preAlertInfo.textContent();
-      expect(text).toContain("היסטורית");
-      expect(text).toContain(CITY);
+      expect(text).toContain("אזעקה לא צפויה לפני");
       // Should contain a time estimate (≈HH:MM)
       expect(text).toMatch(/≈\d{2}:\d{2}/);
 

@@ -151,6 +151,7 @@ body {
 
 .dot-red    { background: #d50000; }
 .dot-pre_alert { background: #f9a825; }
+.dot-siren_window  { background: #f57c00; }
 .dot-likely_passed { background: #ffab00; }
 .dot-green  { background: #00c853; }
 .dot-gray   { background: #9e9e9e; }
@@ -567,13 +568,15 @@ import * as engine from "./alert-engine.js";
         }
         es.thresholdsData = data;
         var override = getMissedUsOverride();
+        var ci = data.cities && data.cities[city];
         if (override !== null) {
           es.stableThresholdMs = override * 1000;
-        } else if (data.cities && data.cities[city]) {
-          es.stableThresholdMs = data.cities[city].stable_seconds * 1000;
+        } else if (ci) {
+          es.stableThresholdMs = ci.stable_seconds * 1000;
         } else {
           es.stableThresholdMs = null;
         }
+        es.p5SirenMs = (ci && ci.p5_siren_seconds != null) ? ci.p5_siren_seconds * 1000 : null;
         lastThresholdFetch = Date.now();
         // Re-render info panels if thresholds arrived while already displaying a color
         if (currentColor) {
@@ -611,11 +614,62 @@ import * as engine from "./alert-engine.js";
   var COLOR_MAP = {
     green:  { bg: "#00c853", label: "\u05D4\u05DB\u05DC \u05EA\u05E7\u05D9\u05DF" },        // הכל תקין
     pre_alert: { bg: "#f9a825", label: "\u05D4\u05EA\u05E8\u05D0\u05D4 \u05DE\u05D5\u05E7\u05D3\u05DE\u05EA" }, // התראה מוקדמת
+    siren_window: { bg: "#f57c00", label: "\u05D4\u05EA\u05E8\u05D0\u05D4 \u05DE\u05D5\u05E7\u05D3\u05DE\u05EA" }, // התראה מוקדמת (siren window)
     likely_passed: { bg: "#ffab00", label: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8" }, // כנראה עבר
     red:    { bg: "#d50000", label: "!\u05D0\u05D6\u05E2\u05E7\u05D4" }                      // !אזעקה
   };
 
   var currentColor = null;
+
+  // Build a formatted duration string like "1:30" or "45 שניות"
+  function fmtDuration(sec) {
+    if (sec == null) return null;
+    var m = Math.floor(sec / 60);
+    var s = Math.round(sec % 60);
+    if (m > 0) return m + ":" + String(s).padStart(2, "0");
+    return s + " \u05E9\u05E0\u05D9\u05D5\u05EA"; // שניות
+  }
+
+  // Build the ? panel HTML for pre-alert states (pre_alert / siren_window)
+  function buildPreAlertPanel(ci, isWindow) {
+    var hitRate = ci && ci.siren_hit_rate != null ? Math.round(ci.siren_hit_rate * 100) : null;
+    var pcts = [];
+    var keys = [
+      { key: "p5_siren_seconds",     label: "P5" },
+      { key: "p25_siren_seconds",    label: "P25" },
+      { key: "median_siren_seconds", label: "\u05D7\u05E6\u05D9\u05D5\u05DF" }, // חציון
+      { key: "p75_siren_seconds",    label: "P75" },
+    ];
+    // Show P95 if finite, otherwise show Max if P95 is null (infinite) and a finite max exists
+    if (ci && ci.p95_siren_seconds != null) {
+      keys.push({ key: "p95_siren_seconds", label: "P95" });
+    } else if (ci && ci.p95_siren_seconds == null && ci.latest_siren_seconds != null) {
+      keys.push({ key: "latest_siren_seconds", label: "Max" });
+    }
+    keys.forEach(function(k) {
+      if (ci && ci[k.key] != null) {
+        pcts.push(k.label + ": " + fmtDuration(ci[k.key]));
+      }
+    });
+    var intro = isWindow
+      // הגעת לחלון שבו אזעקות ב[city] נוטות להגיע.
+      ? "\u05D4\u05D2\u05E2\u05EA \u05DC\u05D7\u05DC\u05D5\u05DF \u05E9\u05D1\u05D5 \u05D0\u05D6\u05E2\u05E7\u05D5\u05EA \u05D1" + escapeHtml(city) + " \u05E0\u05D5\u05D8\u05D5\u05EA \u05DC\u05D4\u05D2\u05D9\u05E2."
+      // עדיין לא הגיע זמן האזעקה ב[city].
+      : "\u05E2\u05D3\u05D9\u05D9\u05DF \u05DC\u05D0 \u05D4\u05D2\u05D9\u05E2 \u05D6\u05DE\u05DF \u05D4\u05D0\u05D6\u05E2\u05E7\u05D4 \u05D1" + escapeHtml(city) + ".";
+    var html = '<div class="mu-summary">' + intro;
+    if (hitRate != null) {
+      // Y% מההתראות הפכו לאזעקות.
+      html += "<br>" + hitRate + "% \u05DE\u05D4\u05D4\u05EA\u05E8\u05D0\u05D5\u05EA \u05D4\u05E4\u05DB\u05D5 \u05DC\u05D0\u05D6\u05E2\u05E7\u05D5\u05EA.";
+    }
+    if (pcts.length > 0) {
+      // תזמון היסטורי:
+      html += "<br>\u05EA\u05D6\u05DE\u05D5\u05DF \u05D4\u05D9\u05E1\u05D8\u05D5\u05E8\u05D9: " + pcts.join(" \u00B7 ");
+    }
+    html += '</div>';
+    html += '<div class="mu-link"><a href="/report.html#' + encodeURIComponent(city) +
+      '">\u05DC\u05DE\u05D9\u05D3\u05E2 \u05E0\u05D5\u05E1\u05E3 \u2014 \u05D3\u05D5\u05F4\u05D7 \u05E0\u05D9\u05EA\u05D5\u05D7 \u05E1\u05E3 \u05D4\u05D4\u05DE\u05EA\u05E0\u05D4 \u2190</a></div>';
+    return html;
+  }
 
   function applyColor(color) {
     if (color === currentColor) return;
@@ -624,7 +678,9 @@ import * as engine from "./alert-engine.js";
     var info = COLOR_MAP[color];
     elBody.style.backgroundColor = info.bg;
     elStatus.textContent = info.label;
-    // Show ? button and populate hidden panel only in likely_passed state
+
+    var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[city];
+
     if (color === "likely_passed") {
       var threshSec = Math.round(es.stableThresholdMs / 1000);
       var threshMin = threshSec >= 60 ? Math.floor(threshSec / 60) + ":" + String(threshSec % 60).padStart(2, "0") : threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA";
@@ -643,33 +699,50 @@ import * as engine from "./alert-engine.js";
       elMissedUsInfo.innerHTML = html;
       elHelpBtn.style.display = "inline-flex";
       elPreAlertInfo.style.display = "none";
-    } else if (color === "pre_alert") {
-      elHelpBtn.style.display = "none";
-      elMissedUsInfo.style.display = "none";
-      // Show "as soon as" siren timing on pre-alert
-      var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[city];
-      if (ci && ci.earliest_siren_seconds != null && es.currentRecord && es.currentRecord.time) {
-        var earliestSec = ci.earliest_siren_seconds;
-        var preAlertMs = es.currentRecord.time * 1000;
-        var expectedMs = preAlertMs + earliestSec * 1000;
-        var expectedDate = new Date(expectedMs);
-        var timeStr = String(expectedDate.getHours()).padStart(2, "0") + ":" +
-          String(expectedDate.getMinutes()).padStart(2, "0");
-        var minPart = Math.floor(earliestSec / 60);
-        var secPart = Math.round(earliestSec % 60);
-        var durationStr = minPart > 0
-          ? minPart + " \u05D3\u05E7\u05D5\u05EA" + (secPart > 0 ? " \u05D5-" + secPart + " \u05E9\u05E0\u05D9\u05D5\u05EA" : "")
-          : Math.round(earliestSec) + " \u05E9\u05E0\u05D9\u05D5\u05EA";
-        // היסטורית, אזעקות ב[city] מגיעות כבר אחרי X דקות מההתראה (≈HH:MM)
-        elPreAlertInfo.innerHTML =
-          "\u05D4\u05D9\u05E1\u05D8\u05D5\u05E8\u05D9\u05EA, \u05D0\u05D6\u05E2\u05E7\u05D5\u05EA \u05D1" +
-          escapeHtml(city) + " \u05DE\u05D2\u05D9\u05E2\u05D5\u05EA \u05DB\u05D1\u05E8 \u05D0\u05D7\u05E8\u05D9 " +
-          durationStr + " \u05DE\u05D4\u05D4\u05EA\u05E8\u05E2\u05D4" +
-          " (\u2248" + timeStr + ")";
-        elPreAlertInfo.style.display = "block";
+
+    } else if (color === "pre_alert" || color === "siren_window") {
+      var isWindow = (color === "siren_window");
+
+      // One-line pre-alert info: "אזעקה לא צפויה לפני X (≈HH:MM)" for pre_alert,
+      // "אזעקה עשויה להגיע בקרוב — Y% מההתראות הפכו לאזעקות" for siren_window
+      if (ci && es.currentRecord && es.currentRecord.time) {
+        if (!isWindow && ci.p5_siren_seconds != null) {
+          var p5Sec = ci.p5_siren_seconds;
+          var expectedMs = es.currentRecord.time * 1000 + p5Sec * 1000;
+          var expectedDate = new Date(expectedMs);
+          var timeStr = String(expectedDate.getHours()).padStart(2, "0") + ":" +
+            String(expectedDate.getMinutes()).padStart(2, "0");
+          // אזעקה לא צפויה לפני X (≈HH:MM)
+          elPreAlertInfo.innerHTML =
+            "\u05D0\u05D6\u05E2\u05E7\u05D4 \u05DC\u05D0 \u05E6\u05E4\u05D5\u05D9\u05D4 \u05DC\u05E4\u05E0\u05D9 " +
+            fmtDuration(p5Sec) + " (\u2248" + timeStr + ")";
+          elPreAlertInfo.style.display = "block";
+        } else if (isWindow) {
+          var hitRatePct = ci.siren_hit_rate != null ? Math.round(ci.siren_hit_rate * 100) : null;
+          // אזעקה עשויה להגיע בקרוב
+          var infoText = "\u05D0\u05D6\u05E2\u05E7\u05D4 \u05E2\u05E9\u05D5\u05D9\u05D4 \u05DC\u05D4\u05D2\u05D9\u05E2 \u05D1\u05E7\u05E8\u05D5\u05D1";
+          if (hitRatePct != null) {
+            // — Y% מההתראות הפכו לאזעקות
+            infoText += " \u2014 " + hitRatePct + "% \u05DE\u05D4\u05D4\u05EA\u05E8\u05D0\u05D5\u05EA \u05D4\u05E4\u05DB\u05D5 \u05DC\u05D0\u05D6\u05E2\u05E7\u05D5\u05EA";
+          }
+          elPreAlertInfo.innerHTML = infoText;
+          elPreAlertInfo.style.display = "block";
+        } else {
+          elPreAlertInfo.style.display = "none";
+        }
       } else {
         elPreAlertInfo.style.display = "none";
       }
+
+      // ? button with panel
+      if (ci) {
+        elMissedUsInfo.innerHTML = buildPreAlertPanel(ci, isWindow);
+        elHelpBtn.style.display = "inline-flex";
+      } else {
+        elHelpBtn.style.display = "none";
+        elMissedUsInfo.style.display = "none";
+      }
+
     } else {
       elHelpBtn.style.display = "none";
       elMissedUsInfo.style.display = "none";

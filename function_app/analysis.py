@@ -6,6 +6,7 @@ Used by both the Azure Function (function_app.py) and the local CLI
 """
 
 import csv
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -258,39 +259,57 @@ def compute_threshold(events, target_fn_rate=0.05):
 def compute_siren_timing_stats(events):
     """Compute summary statistics for pre-alert → target city siren times.
 
-    Returns dict with earliest/median/p25/p75 in seconds, or None if no data.
+    Miss events (pre_alert_to_siren is None) are treated as infinity so that
+    percentiles reflect the full pre-alert population, not just sirens received.
+
+    P5 = "5% of all pre-alert events had a siren by this time" (i.e. siren is
+    unlikely before P5).  A percentile that falls on an infinity value is stored
+    as None (JSON null).
+
+    Returns dict, or None if there are no pre-alert events at all.
     """
-    values = sorted(
+    hit_values = sorted(
         e["pre_alert_to_siren"]
         for e in events
         if e.get("pre_alert_to_siren") is not None
     )
-    if not values:
+    hit_count = len(hit_values)
+    total_count = len(events)
+
+    if total_count == 0:
         return None
 
-    n = len(values)
-    if n % 2 == 1:
-        median = values[n // 2]
-    else:
-        median = (values[n // 2 - 1] + values[n // 2]) / 2
+    # Pad with infinity for misses so percentiles use the full denominator
+    miss_count = total_count - hit_count
+    padded = hit_values + [math.inf] * miss_count
 
     def percentile(vals, pct):
         idx = pct / 100 * (len(vals) - 1)
         lo = int(idx)
         hi = min(lo + 1, len(vals) - 1)
+        if math.isinf(vals[lo]):
+            return None
         frac = idx - lo
-        return vals[lo] + frac * (vals[hi] - vals[lo])
+        if frac == 0 or math.isinf(vals[hi]):
+            return round(vals[lo], 1)
+        val = vals[lo] + frac * (vals[hi] - vals[lo])
+        return None if math.isinf(val) else round(val, 1)
 
-    return {
-        "earliest_siren_seconds": round(values[0], 1),
-        "p5_siren_seconds": round(percentile(values, 5), 1),
-        "p25_siren_seconds": round(percentile(values, 25), 1),
-        "median_siren_seconds": round(median, 1),
-        "p75_siren_seconds": round(percentile(values, 75), 1),
-        "p95_siren_seconds": round(percentile(values, 95), 1),
-        "latest_siren_seconds": round(values[-1], 1),
-        "siren_timing_count": n,
+    siren_hit_rate = round(hit_count / total_count, 4) if total_count > 0 else 0.0
+
+    result = {
+        "earliest_siren_seconds": round(hit_values[0], 1) if hit_values else None,
+        "p5_siren_seconds": percentile(padded, 5),
+        "p25_siren_seconds": percentile(padded, 25),
+        "median_siren_seconds": percentile(padded, 50),
+        "p75_siren_seconds": percentile(padded, 75),
+        "p95_siren_seconds": percentile(padded, 95),
+        "latest_siren_seconds": round(hit_values[-1], 1) if hit_values else None,
+        "siren_hit_count": hit_count,
+        "total_pre_alert_events": total_count,
+        "siren_hit_rate": siren_hit_rate,
     }
+    return result
 
 
 def find_no_warning_sirens(all_rows, *, skip_initial_window: bool = False):
