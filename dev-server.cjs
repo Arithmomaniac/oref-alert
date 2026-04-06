@@ -2,7 +2,7 @@
  * Local dev server with mock data to preview the alert display.
  * Usage: node dev-server.js [scenario]
  *
- * Scenarios: green (default), yellow, amber, red
+ * Scenarios: green, pre_alert, siren_window, likely_passed (default), red
  * Open http://localhost:3000/?city=בית שמש
  */
 var http = require("http");
@@ -10,7 +10,7 @@ var fs = require("fs");
 var path = require("path");
 
 var PORT = 3000;
-var scenario = process.argv[2] || "amber";
+var scenario = process.argv[2] || "likely_passed";
 
 var CITY = "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9"; // בית שמש
 
@@ -35,12 +35,12 @@ var SCENARIOS = {
     alerts: [],
     history: [],
   },
-  yellow: {
-    // Active PRE_ALERT for our city + cohort
+  pre_alert: {
+    // Active PRE_ALERT for our city + cohort — just arrived, before P5
     alerts: [
       {
         cat: "10",
-        title: "\u05D9\u05E8\u05D9 \u05D8\u05D9\u05DC\u05D9\u05DD \u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA",
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
         data: [CITY, "\u05E7\u05E8\u05D9\u05EA \u05DE\u05DC\u05D0\u05DB\u05D9", "\u05E8\u05DE\u05DC\u05D4", "\u05D9\u05E8\u05D5\u05E9\u05DC\u05D9\u05DD"],
       },
     ],
@@ -48,12 +48,30 @@ var SCENARIOS = {
       {
         data: CITY,
         category: "14",
-        alertDate: minutesAgo(2),
-        title: "\u05D9\u05E8\u05D9 \u05D8\u05D9\u05DC\u05D9\u05DD \u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA",
+        alertDate: minutesAgo(0),
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
       },
     ],
   },
-  amber: {
+  siren_window: {
+    // PRE_ALERT issued 3 minutes ago — past P5 (120s) but no cohort sirens yet
+    alerts: [
+      {
+        cat: "10",
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
+        data: [CITY, "\u05E7\u05E8\u05D9\u05EA \u05DE\u05DC\u05D0\u05DB\u05D9", "\u05E8\u05DE\u05DC\u05D4", "\u05D9\u05E8\u05D5\u05E9\u05DC\u05D9\u05DD"],
+      },
+    ],
+    history: [
+      {
+        data: CITY,
+        category: "14",
+        alertDate: minutesAgo(3),
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
+      },
+    ],
+  },
+  likely_passed: {
     // History-only: PRE_ALERT for our city + cohort cities already got sirens minutes ago
     alerts: [],
     history: [
@@ -61,7 +79,7 @@ var SCENARIOS = {
         data: CITY,
         category: "14",
         alertDate: minutesAgo(5),
-        title: "\u05D9\u05E8\u05D9 \u05D8\u05D9\u05DC\u05D9\u05DD \u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA",
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
       },
       // Cohort cities got sirens in history
       {
@@ -81,19 +99,19 @@ var SCENARIOS = {
         data: "\u05E7\u05E8\u05D9\u05EA \u05DE\u05DC\u05D0\u05DB\u05D9",
         category: "14",
         alertDate: minutesAgo(5),
-        title: "\u05D9\u05E8\u05D9 \u05D8\u05D9\u05DC\u05D9\u05DD \u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA",
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
       },
       {
         data: "\u05E8\u05DE\u05DC\u05D4",
         category: "14",
         alertDate: minutesAgo(5),
-        title: "\u05D9\u05E8\u05D9 \u05D8\u05D9\u05DC\u05D9\u05DD \u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA",
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
       },
       {
         data: "\u05D9\u05E8\u05D5\u05E9\u05DC\u05D9\u05DD",
         category: "14",
         alertDate: minutesAgo(5),
-        title: "\u05D9\u05E8\u05D9 \u05D8\u05D9\u05DC\u05D9\u05DD \u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA",
+        title: "\u05D1\u05D3\u05E7\u05D5\u05EA \u05D4\u05E7\u05E8\u05D5\u05D1\u05D5\u05EA \u05E6\u05E4\u05D5\u05D9\u05D5\u05EA \u05DC\u05D4\u05EA\u05E7\u05D1\u05DC \u05D4\u05EA\u05E8\u05E2\u05D5\u05EA \u05D1\u05D0\u05D6\u05D5\u05E8\u05DA",
       },
     ],
   },
@@ -119,9 +137,9 @@ var SCENARIOS = {
 var thresholds = {
   updated: new Date().toISOString(),
   cities: {
-    "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9": { stable_seconds: 90, fn_rate: 0.04, events: 47, earliest_siren_seconds: 180, median_siren_seconds: 360 },
-    "\u05E7\u05E8\u05DE\u05D9\u05D0\u05DC": { stable_seconds: 120, fn_rate: 0.03, events: 62, earliest_siren_seconds: 90, median_siren_seconds: 240 },
-    "\u05D7\u05E8\u05D9\u05E9": { stable_seconds: 150, fn_rate: 0.05, events: 34, earliest_siren_seconds: 120, median_siren_seconds: 300 },
+    "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9": { stable_seconds: 90, fn_rate: 0.04, events: 47, earliest_siren_seconds: 180, p5_siren_seconds: 120, p25_siren_seconds: 210, median_siren_seconds: 360, p75_siren_seconds: 480, p95_siren_seconds: 600, latest_siren_seconds: 900, siren_hit_count: 35, total_pre_alert_events: 47, siren_hit_rate: 0.74 },
+    "\u05E7\u05E8\u05DE\u05D9\u05D0\u05DC": { stable_seconds: 120, fn_rate: 0.03, events: 62, earliest_siren_seconds: 90, p5_siren_seconds: 20, p25_siren_seconds: 120, median_siren_seconds: 240, p75_siren_seconds: 360, p95_siren_seconds: null, latest_siren_seconds: 500, siren_hit_count: 55, total_pre_alert_events: 62, siren_hit_rate: 0.89 },
+    "\u05D7\u05E8\u05D9\u05E9": { stable_seconds: 150, fn_rate: 0.05, events: 34, earliest_siren_seconds: 120, p5_siren_seconds: 25, p25_siren_seconds: 150, median_siren_seconds: 300, p75_siren_seconds: 420, p95_siren_seconds: 540, latest_siren_seconds: 700, siren_hit_count: 28, total_pre_alert_events: 34, siren_hit_rate: 0.82 },
   },
 };
 
@@ -224,5 +242,5 @@ http.createServer(function (req, res) {
   console.log("Dev server running at http://localhost:" + PORT + "/?city=" + encodeURIComponent(CITY));
   console.log("Scenario: " + scenario.toUpperCase());
   console.log("");
-  console.log("Available scenarios: node dev-server.js [green|yellow|amber|red]");
+  console.log("Available scenarios: node dev-server.js [green|pre_alert|siren_window|likely_passed|red]");
 });

@@ -222,6 +222,10 @@ export function processState(state, es, city, nowMs) {
       var changed = shouldUpdate(rec, es.currentRecord);
       if (changed) {
         es.currentRecord = rec;
+        // Store original poll time for backdating reference (prevents cumulative drift)
+        if (cl.type === PRE_ALERT) {
+          es._rtPollTimeSec = timeSec;
+        }
       }
 
       // Cohort tracking on PRE_ALERT
@@ -331,8 +335,43 @@ export function processState(state, es, city, nowMs) {
         }
       }
 
-      var hDotColor = getColor(hRec, es, nowMs) === "red" ? "red" : getColor(hRec, es, nowMs) === "pre_alert" ? "pre_alert" : "green";
+      var hDotColor = getColor(hRec, es, nowMs) === "red" ? "red" : getColor(hRec, es, nowMs) === "green" ? "green" : "pre_alert";
       events.push({ dotColor: hDotColor, title: hTitle || ("\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4 " + hCat), source: "HIST", causedChange: hChanged });
+    }
+  }
+
+  // ── Backdate PRE_ALERT time from history ──────────────────────
+  // When the browser first sees a realtime PRE_ALERT, rec.time is set to
+  // the poll timestamp.  History may contain the actual alertDate, which
+  // is earlier.  Backdating ensures siren_window triggers at the correct
+  // time relative to the real pre-alert issuance.
+  // Cap the max backdate to 10 minutes to avoid matching an unrelated
+  // older pre-alert that happens to still be within the expiry window.
+  var MAX_BACKDATE_SEC = 600;
+  if (es.currentRecord && es.currentRecord.type === PRE_ALERT && Array.isArray(state.history)) {
+    // Compare against the original RT poll time (not the possibly-backdated time)
+    var refTime = es._rtPollTimeSec || es.currentRecord.time;
+    var bestBdTime = null;
+    for (var bd = 0; bd < state.history.length; bd++) {
+      var bdh = state.history[bd];
+      var bdCat = parseInt(bdh.category || bdh.cat, 10);
+      if (bdCat !== HIST_PRE_ALERT_CATEGORY) continue;
+      if ((bdh.data || "") !== city) continue;
+      if (!bdh.alertDate) continue;
+      var bdTime = Math.floor(parseAlertDate(bdh.alertDate).getTime() / 1000);
+      // Use the most recent history pre-alert that's earlier than the
+      // original poll time, within the max backdate window, and not expired
+      if (bdTime < refTime &&
+          (refTime - bdTime) <= MAX_BACKDATE_SEC &&
+          bdTime * 1000 + PRE_ALERT_EXPIRY_MIN * 60 * 1000 > nowMs) {
+        if (bestBdTime === null || bdTime > bestBdTime) {
+          bestBdTime = bdTime;
+        }
+      }
+    }
+    if (bestBdTime !== null) {
+      es.currentRecord.time = bestBdTime;
+      es.currentRecord.expiryMs = bestBdTime * 1000 + PRE_ALERT_EXPIRY_MIN * 60 * 1000;
     }
   }
 

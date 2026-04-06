@@ -350,6 +350,125 @@ console.log("\n10. siren_window — triggered at P5 threshold");
   assertColor(r3, "likely_passed", "likely_passed takes priority over siren_window when stable elapsed");
 }
 
+// ── Test 11: History backdating — rec.time corrected from history alertDate ──
+
+console.log("\n11. History backdating — siren_window uses actual pre-alert time, not poll time");
+{
+  // Scenario: pre-alert was actually issued at 09:00:00, but browser
+  // first polled at 09:01:30 (90s late).  P5 = 60s.
+  // Without backdating: siren_window at poll+60s = 09:02:30 (wrong)
+  // With backdating:    siren_window at issue+60s = 09:01:00 (correct)
+
+  var es = engine.createState({ stableThresholdMs: 240000, p5SirenMs: 60000 });
+  var issueTime = tMs("09:00:00");    // actual pre-alert issuance
+  var pollTime  = tMs("09:01:30");    // browser first polls 90s later
+
+  // Poll 1: RT pre-alert, no history yet → rec.time = pollTime
+  var state1 = makeStateJson([
+    { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: [CITY, ...COHORT] },
+  ], [], "2026-04-01T09:01:30Z");
+  var r1 = engine.processState(state1, es, CITY, pollTime);
+  assertColor(r1, "pre_alert", "first poll: rec.time = pollTime, elapsed=0 < P5 → pre_alert");
+  assert(es.currentRecord.time === Math.floor(pollTime / 1000),
+    "rec.time is poll time before history arrives");
+
+  // Poll 2: same RT alert, history now has the pre-alert with real alertDate
+  // at 09:02:10 (40s after poll), elapsed since POLL = 40s < P5(60s) → still pre_alert
+  // BUT elapsed since ISSUE = 130s > P5(60s) → should backdate and show siren_window
+  var state2 = makeStateJson([
+    { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: [CITY, ...COHORT] },
+  ], [
+    { category: "14", alertDate: "2026-04-01 09:00:00",
+      title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: CITY },
+  ], "2026-04-01T09:02:10Z");
+  var r2 = engine.processState(state2, es, CITY, pollTime + 40000); // 09:02:10
+  assert(es.currentRecord.time === Math.floor(issueTime / 1000),
+    "rec.time backdated to actual issue time from history");
+  assertColor(r2, "siren_window",
+    "backdated: elapsed since issue=130s > P5(60s) → siren_window");
+}
+
+// ── Test 12: Backdating does not use expired history entries ──
+
+console.log("\n12. Backdating skips expired history pre-alerts");
+{
+  var es = engine.createState({ stableThresholdMs: 240000, p5SirenMs: 60000 });
+  var pollTime = tMs("12:05:00");
+
+  // RT pre-alert at 12:05
+  var state1 = makeStateJson([
+    { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: [CITY, ...COHORT] },
+  ], [
+    // Old expired pre-alert from 09:00 (3h ago > 180min expiry)
+    { category: "14", alertDate: "2026-04-01 09:00:00",
+      title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: CITY },
+  ], "2026-04-01T12:05:00Z");
+  var r1 = engine.processState(state1, es, CITY, pollTime);
+  assert(es.currentRecord.time === Math.floor(pollTime / 1000),
+    "expired history entry ignored — rec.time stays at poll time");
+  assertColor(r1, "pre_alert", "no backdating from expired entry → pre_alert");
+}
+
+// ── Test 13: Backdating rejects unrelated older pre-alert within expiry ──
+
+console.log("\n13. Backdating rejects unrelated older pre-alert (>10min gap)");
+{
+  var es = engine.createState({ stableThresholdMs: 240000, p5SirenMs: 60000 });
+  var pollTime = tMs("09:20:00");
+
+  // RT pre-alert at 09:20, history has an OLDER pre-alert from 09:05 (15min ago)
+  // Both within 180min expiry, but 15min apart > MAX_BACKDATE_SEC (10min)
+  var state1 = makeStateJson([
+    { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: [CITY, ...COHORT] },
+  ], [
+    { category: "14", alertDate: "2026-04-01 09:05:00",
+      title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: CITY },
+  ], "2026-04-01T09:20:00Z");
+  var r1 = engine.processState(state1, es, CITY, pollTime);
+  assert(es.currentRecord.time === Math.floor(pollTime / 1000),
+    "older unrelated pre-alert (15min gap) not used for backdating");
+  assertColor(r1, "pre_alert", "no backdating from unrelated entry → pre_alert");
+}
+
+// ── Test 14: Backdating is idempotent across polls (no cumulative drift) ──
+
+console.log("\n14. Backdating does not drift to older entries across polls");
+{
+  var es = engine.createState({ stableThresholdMs: 240000, p5SirenMs: 60000 });
+  var pollTime = tMs("09:06:00");
+
+  // Poll 1: RT pre-alert at 09:06, history has two entries
+  var state1 = makeStateJson([
+    { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: [CITY, ...COHORT] },
+  ], [
+    // Older pre-alert at 09:00 (6min before poll)
+    { category: "14", alertDate: "2026-04-01 09:00:00",
+      title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: CITY },
+    // Correct pre-alert at 09:05 (1min before poll)
+    { category: "14", alertDate: "2026-04-01 09:05:00",
+      title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
+      data: CITY },
+  ], "2026-04-01T09:06:00Z");
+
+  var r1 = engine.processState(state1, es, CITY, pollTime);
+  assert(es.currentRecord.time === t("09:05:00"),
+    "poll 1: backdated to most recent entry (09:05)");
+
+  // Poll 2: same data, 5s later — should NOT drift to 09:00
+  var r2 = engine.processState(state1, es, CITY, pollTime + 5000);
+  assert(es.currentRecord.time === t("09:05:00"),
+    "poll 2: still at 09:05, did not drift to 09:00");
+}
+
 // ── Summary ──
 
 console.log("\n" + "═".repeat(40));
