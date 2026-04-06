@@ -142,9 +142,9 @@ export function getColor(rec, es, nowMs) {
     if (es.stableThresholdMs !== null &&
         es.sirenCohortCities.size > 0 && es.firstCohortSirenMs !== null &&
         (nowMs - es.firstCohortSirenMs) >= es.stableThresholdMs) {
-      return "yellow_orange";
+      return "likely_passed";
     }
-    return "yellow";
+    return "pre_alert";
   }
   return "green";
 }
@@ -235,7 +235,7 @@ export function processState(state, es, city, nowMs) {
         es.firstCohortSirenMs = null;
       }
 
-      var evColor = getColor(rec, es, nowMs) === "green" ? "green" : getColor(rec, es, nowMs) === "red" ? "red" : "yellow";
+      var evColor = getColor(rec, es, nowMs) === "green" ? "green" : getColor(rec, es, nowMs) === "red" ? "red" : "pre_alert";
       events.push({ dotColor: evColor, title: title, source: "RT", causedChange: changed });
     }
   }
@@ -262,12 +262,12 @@ export function processState(state, es, city, nowMs) {
       }
     }
 
-    // Check if we just transitioned to yellow_orange
+    // Check if we just transitioned to likely_passed
     var missedUsColor = getColor(es.currentRecord, es, nowMs);
-    if (missedUsColor === "yellow_orange") {
+    if (missedUsColor === "likely_passed") {
       var lastEvt = es.eventLog.length > 0 ? es.eventLog[0] : null;
-      if (!lastEvt || lastEvt.dotColor !== "yellow_orange") {
-        events.push({ dotColor: "yellow_orange", title: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8", source: "SYS", causedChange: true });
+      if (!lastEvt || lastEvt.dotColor !== "likely_passed") {
+        events.push({ dotColor: "likely_passed", title: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8", source: "SYS", causedChange: true });
       }
     }
   }
@@ -326,19 +326,19 @@ export function processState(state, es, city, nowMs) {
         }
       }
 
-      var hDotColor = getColor(hRec, es, nowMs) === "red" ? "red" : getColor(hRec, es, nowMs) === "yellow" ? "yellow" : "green";
+      var hDotColor = getColor(hRec, es, nowMs) === "red" ? "red" : getColor(hRec, es, nowMs) === "pre_alert" ? "pre_alert" : "green";
       events.push({ dotColor: hDotColor, title: hTitle || ("\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4 " + hCat), source: "HIST", causedChange: hChanged });
     }
   }
 
-  // ── Post-history amber check (mirrors Pass 2 transition event) ──
+  // ── Post-history likely_passed check (mirrors Pass 2 transition event) ──
   if (es.cohortCities.size > 0 && es.currentRecord && es.currentRecord.type === PRE_ALERT) {
     var postHistColor = getColor(es.currentRecord, es, nowMs);
-    if (postHistColor === "yellow_orange") {
+    if (postHistColor === "likely_passed") {
       var lastEvt2 = es.eventLog.length > 0 ? es.eventLog[0] : null;
-      var alreadyLogged = events.some(function(ev) { return ev.dotColor === "yellow_orange"; });
-      if (!alreadyLogged && (!lastEvt2 || lastEvt2.dotColor !== "yellow_orange")) {
-        events.push({ dotColor: "yellow_orange", title: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8", source: "SYS", causedChange: true });
+      var alreadyLogged = events.some(function(ev) { return ev.dotColor === "likely_passed"; });
+      if (!alreadyLogged && (!lastEvt2 || lastEvt2.dotColor !== "likely_passed")) {
+        events.push({ dotColor: "likely_passed", title: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8", source: "SYS", causedChange: true });
       }
     }
   }
@@ -401,7 +401,7 @@ export function rebuildRecentHistory(state, city, nowMs) {
   relevant.sort(function(a, b) { return a.timeMs - b.timeMs; });
   for (var r = 0; r < relevant.length; r++) {
     var ev = relevant[r];
-    var dotColor = ev.type === ALERT ? "red" : ev.type === PRE_ALERT ? "yellow" : "green";
+    var dotColor = ev.type === ALERT ? "red" : ev.type === PRE_ALERT ? "pre_alert" : "green";
     var dt = new Date(ev.timeMs);
     var hh = String(dt.getHours()).padStart(2, "0");
     var mm = String(dt.getMinutes()).padStart(2, "0");

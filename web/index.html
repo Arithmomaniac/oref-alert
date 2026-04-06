@@ -150,8 +150,8 @@ body {
 }
 
 .dot-red    { background: #d50000; }
-.dot-yellow { background: #f9a825; }
-.dot-yellow_orange { background: #ffab00; }
+.dot-pre_alert { background: #f9a825; }
+.dot-likely_passed { background: #ffab00; }
 .dot-green  { background: #00c853; }
 .dot-gray   { background: #9e9e9e; }
 
@@ -610,8 +610,8 @@ import * as engine from "./alert-engine.js";
 
   var COLOR_MAP = {
     green:  { bg: "#00c853", label: "\u05D4\u05DB\u05DC \u05EA\u05E7\u05D9\u05DF" },        // הכל תקין
-    yellow: { bg: "#f9a825", label: "\u05D4\u05EA\u05E8\u05D0\u05D4 \u05DE\u05D5\u05E7\u05D3\u05DE\u05EA" }, // התראה מוקדמת
-    yellow_orange: { bg: "#ffab00", label: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8" }, // כנראה עבר
+    pre_alert: { bg: "#f9a825", label: "\u05D4\u05EA\u05E8\u05D0\u05D4 \u05DE\u05D5\u05E7\u05D3\u05DE\u05EA" }, // התראה מוקדמת
+    likely_passed: { bg: "#ffab00", label: "\u05DB\u05E0\u05E8\u05D0\u05D4 \u05E2\u05D1\u05E8" }, // כנראה עבר
     red:    { bg: "#d50000", label: "!\u05D0\u05D6\u05E2\u05E7\u05D4" }                      // !אזעקה
   };
 
@@ -624,8 +624,8 @@ import * as engine from "./alert-engine.js";
     var info = COLOR_MAP[color];
     elBody.style.backgroundColor = info.bg;
     elStatus.textContent = info.label;
-    // Show ? button and populate hidden panel only in yellow_orange state
-    if (color === "yellow_orange") {
+    // Show ? button and populate hidden panel only in likely_passed state
+    if (color === "likely_passed") {
       var threshSec = Math.round(es.stableThresholdMs / 1000);
       var threshMin = threshSec >= 60 ? Math.floor(threshSec / 60) + ":" + String(threshSec % 60).padStart(2, "0") : threshSec + " \u05E9\u05E0\u05D9\u05D5\u05EA";
       // ערים סמוכות באותה התרעה קיבלו אזעקות, אך [city] לא קיבלה במשך N מהאזעקה הראשונה בערים הסמוכות.
@@ -643,7 +643,7 @@ import * as engine from "./alert-engine.js";
       elMissedUsInfo.innerHTML = html;
       elHelpBtn.style.display = "inline-flex";
       elPreAlertInfo.style.display = "none";
-    } else if (color === "yellow") {
+    } else if (color === "pre_alert") {
       elHelpBtn.style.display = "none";
       elMissedUsInfo.style.display = "none";
       // Show "as soon as" siren timing on pre-alert

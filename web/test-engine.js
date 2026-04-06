@@ -59,7 +59,7 @@ console.log("\n1. Happy path — real-time amber");
       data: [CITY, ...COHORT] },
   ]);
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "yellow", "PRE_ALERT → yellow");
+  assertColor(r1, "pre_alert", "PRE_ALERT → pre_alert");
   assert(es.cohortCities.size === 3, "cohortCities has 3 cities");
 
   // Poll 2: Sirens for cohort cities (5s later)
@@ -70,13 +70,13 @@ console.log("\n1. Happy path — real-time amber");
     { cat: "1", title: "ירי רקטות וטילים", data: COHORT },
   ]);
   var r2 = engine.processState(state2, es, CITY, now);
-  assertColor(r2, "yellow", "sirens just started → still yellow (threshold not met)");
+  assertColor(r2, "pre_alert", "sirens just started → still yellow (threshold not met)");
   assert(es.sirenCohortCities.size === 3, "all 3 cohort cities detected");
 
   // Poll 3: 240s later — threshold elapsed
   now += 240000;
   var r3 = engine.processState(state2, es, CITY, now);
-  assertColor(r3, "yellow_orange", "240s elapsed → amber");
+  assertColor(r3, "likely_passed", "240s elapsed → amber");
 }
 
 // ── Test 2: Today's bug — history-only PRE_ALERT (no cohort tracking) ──
@@ -111,7 +111,7 @@ console.log("\n2. History-only PRE_ALERT — amber via cohort reconstruction (bu
     ],
   );
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "yellow_orange", "history cohort reconstruction → amber");
+  assertColor(r1, "likely_passed", "history cohort reconstruction → amber");
   assert(es.cohortCities.size === 3, "cohortCities reconstructed from history");
   assert(es.sirenCohortCities.size === 3, "sirenCohortCities populated from history");
 }
@@ -202,7 +202,7 @@ console.log("\n5. Cohort siren trickle does NOT reset timer (first-siren)");
   // 240s after the FIRST batch (not the trickle) → amber
   now = firstSiren1 + 240000;
   var r4 = engine.processState(state3, es, CITY, now);
-  assertColor(r4, "yellow_orange", "240s after first siren → amber");
+  assertColor(r4, "likely_passed", "240s after first siren → amber");
 }
 
 // ── Test 6: PRE_ALERT expiry ──
@@ -217,7 +217,7 @@ console.log("\n6. PRE_ALERT expiry after 180 minutes");
       data: [CITY, ...COHORT] },
   ]);
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "yellow", "PRE_ALERT → yellow");
+  assertColor(r1, "pre_alert", "PRE_ALERT → pre_alert");
 
   // 181 minutes later (past 180-min expiry), no more alerts
   now += 181 * 60 * 1000;
@@ -250,9 +250,9 @@ console.log("\n7. RT alert dedup across polls");
   assert(eventCount2 === 0, "second poll with same data → no new RT events (deduped)");
 }
 
-// ── Test 8: History PRE_ALERT with no cohort sirens → stays yellow ──
+// ── Test 8: History PRE_ALERT with no cohort sirens → stays pre_alert ──
 
-console.log("\n8. History PRE_ALERT with no cohort sirens → yellow (no false amber)");
+console.log("\n8. History PRE_ALERT with no cohort sirens → pre_alert (no false likely_passed)");
 {
   var es = engine.createState({ stableThresholdMs: 240000 });
   var now = tMs("09:20:00");
@@ -270,7 +270,7 @@ console.log("\n8. History PRE_ALERT with no cohort sirens → yellow (no false a
     ],
   );
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "yellow", "history cohort but no sirens → stays yellow");
+  assertColor(r1, "pre_alert", "history cohort but no sirens → stays yellow");
   assert(es.cohortCities.size === 2, "cohortCities reconstructed (2 cohort cities)");
   assert(es.sirenCohortCities.size === 0, "sirenCohortCities empty (no sirens in history)");
 }
@@ -305,7 +305,7 @@ console.log("\n9. Thresholds data with siren timing stats accessible on pre-aler
       data: [CITY, ...COHORT] },
   ]);
   var r1 = engine.processState(state1, es, CITY, now);
-  assertColor(r1, "yellow", "PRE_ALERT → yellow with thresholds data");
+  assertColor(r1, "pre_alert", "PRE_ALERT → yellow with thresholds data");
 
   // Verify thresholds data is accessible
   var ci = es.thresholdsData && es.thresholdsData.cities && es.thresholdsData.cities[CITY];

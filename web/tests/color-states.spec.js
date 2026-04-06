@@ -16,20 +16,20 @@ const CITY = "בית שמש";
  * Start a local HTTP server that serves index.html and mock API responses.
  * fixtureFile controls what /api/state.json returns.
  * thresholds are always returned with a 0s threshold for the test city
- * (so amber triggers immediately when conditions are met).
+ * (so likely_passed triggers immediately when conditions are met).
  */
 function startMockServer(fixtureFile) {
   const stateData = fs.readFileSync(path.join(FIXTURES_DIR, fixtureFile), "utf-8");
 
   // Thresholds: 0s for amber test (immediate trigger), 240s otherwise
-  const isAmberFixture = fixtureFile.includes("amber");
+  const isLikelyPassed = fixtureFile.includes("likely_passed");
   const thresholds = JSON.stringify({
     updated: new Date().toISOString(),
     default_stable_seconds: 300,
     target_fn_rate: 0.05,
     cities: {
       [CITY]: {
-        stable_seconds: isAmberFixture ? 0 : 240,
+        stable_seconds: isLikelyPassed ? 0 : 240,
         events: 100,
         fn_rate: 0.0,
         earliest_siren_seconds: 180,
@@ -100,9 +100,9 @@ function startMockServer(fixtureFile) {
 
 const EXPECTED = {
   green:  { bg: "rgb(0, 200, 83)",  text: "הכל תקין" },
-  yellow: { bg: "rgb(249, 168, 37)", text: "התראה מוקדמת" },
+  pre_alert: { bg: "rgb(249, 168, 37)", text: "התראה מוקדמת" },
   red:    { bg: "rgb(213, 0, 0)",    text: "!אזעקה" },      // note: RTL, "!" first in DOM
-  amber:  { bg: "rgb(255, 171, 0)",  text: "כנראה עבר" },
+  likely_passed: { bg: "rgb(255, 171, 0)",  text: "כנראה עבר" },
 };
 
 test.describe("Alert display color states", () => {
@@ -111,9 +111,9 @@ test.describe("Alert display color states", () => {
 
   for (const [color, fixture] of [
     ["green", "state-green.json"],
-    ["yellow", "state-yellow.json"],
+    ["pre_alert", "state-pre_alert.json"],
     ["red", "state-red.json"],
-    ["amber", "state-amber.json"],
+    ["likely_passed", "state-likely_passed.json"],
   ]) {
     test(`should show ${color} state`, async ({ page }) => {
       mock = await startMockServer(fixture);
@@ -129,8 +129,8 @@ test.describe("Alert display color states", () => {
         // Wait for at least one poll cycle (5s) + rendering
         await page.waitForTimeout(7000);
 
-        // For amber: need a second poll so getColor evaluates with stable threshold elapsed
-        if (color === "amber") {
+        // For likely_passed: need a second poll so getColor evaluates with stable threshold elapsed
+        if (color === "likely_passed") {
           await page.waitForTimeout(6000);
         }
 
@@ -166,8 +166,8 @@ test.describe("Pre-alert 'as soon as' info", () => {
   /** @type {{ server: http.Server, port: number, url: string }} */
   let mock;
 
-  test("should show 'as soon as' siren timing on pre-alert (yellow/orange) page", async ({ page }) => {
-    mock = await startMockServer("state-yellow.json");
+  test("should show 'as soon as' siren timing on pre_alert page", async ({ page }) => {
+    mock = await startMockServer("state-pre_alert.json");
 
     try {
       await page.route("**/orefalert-func.azurewebsites.net/**", (route) =>
@@ -177,11 +177,11 @@ test.describe("Pre-alert 'as soon as' info", () => {
       await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
       await page.waitForTimeout(7000);
 
-      // Verify background is yellow (pre-alert)
+      // Verify background is pre_alert
       const bg = await page.evaluate(() =>
         window.getComputedStyle(document.body).backgroundColor
       );
-      expect(bg).toBe(EXPECTED.yellow.bg);
+      expect(bg).toBe(EXPECTED.pre_alert.bg);
 
       // Verify the pre-alert-info element is visible and contains "as soon as" data
       const preAlertInfo = page.locator("#pre-alert-info");
@@ -195,7 +195,7 @@ test.describe("Pre-alert 'as soon as' info", () => {
       expect(text).toMatch(/≈\d{2}:\d{2}/);
 
       await page.screenshot({
-        path: path.join(__dirname, "baseline-yellow-asap.png"),
+        path: path.join(__dirname, "baseline-pre_alert-asap.png"),
         fullPage: true,
       });
     } finally {
@@ -221,8 +221,8 @@ test.describe("Pre-alert 'as soon as' info", () => {
     }
   });
 
-  test("should NOT show 'as soon as' info on amber page", async ({ page }) => {
-    mock = await startMockServer("state-amber.json");
+  test("should NOT show 'as soon as' info on likely_passed page", async ({ page }) => {
+    mock = await startMockServer("state-likely_passed.json");
 
     try {
       await page.route("**/orefalert-func.azurewebsites.net/**", (route) =>
@@ -232,16 +232,21 @@ test.describe("Pre-alert 'as soon as' info", () => {
       await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
       await page.waitForTimeout(13000);
 
-      // Should be amber
+      // Should be likely_passed
       const bg = await page.evaluate(() =>
         window.getComputedStyle(document.body).backgroundColor
       );
-      expect(bg).toBe(EXPECTED.amber.bg);
+      expect(bg).toBe(EXPECTED.likely_passed.bg);
 
-      // pre-alert-info should be hidden; missed-us-info should be visible instead
+      // pre-alert-info should be hidden; help button should be visible
       const preAlertInfo = page.locator("#pre-alert-info");
       await expect(preAlertInfo).toBeHidden();
 
+      const helpBtn = page.locator("#help-btn");
+      await expect(helpBtn).toBeVisible();
+
+      // Click ? to open the missed-us panel, then verify it appears
+      await helpBtn.click();
       const missedUsInfo = page.locator("#missed-us-info");
       await expect(missedUsInfo).toBeVisible();
     } finally {
