@@ -11,7 +11,6 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 HIST_ALERT_CATEGORIES = {1, 2, 3, 4, 7, 8, 9, 10, 11, 12}
-END_CATEGORY = 13
 PRE_ALERT_CATEGORY = 14
 EVENT_WINDOW_MIN = 20
 MIN_EVENTS_FOR_THRESHOLD = 5
@@ -23,8 +22,8 @@ def parse_date_time(date_str: str, time_str: str) -> datetime:
 
 
 def city_matches(area: str, city: str) -> bool:
-    """Substring match: 'בית שמש 188' matches 'בית שמש'."""
-    return city in area
+    """Exact match — the CSV data field is always a canonical city name."""
+    return city == area
 
 
 def load_csv_rows(lines, cutoff_dt: datetime, *, min_rid: int | None = None):
@@ -74,7 +73,7 @@ def load_csv_rows(lines, cutoff_dt: datetime, *, min_rid: int | None = None):
         if dt >= cutoff_dt:
             continue
         cat = int(row[4])
-        areas = [a.strip() for a in row[0].split(",")]
+        areas = [row[0].strip()]
         all_rows.append((dt, cat, areas, alert_date_str))
         if cat == PRE_ALERT_CATEGORY:
             for area in areas:
@@ -82,65 +81,6 @@ def load_csv_rows(lines, cutoff_dt: datetime, *, min_rid: int | None = None):
 
     all_rows.sort(key=lambda r: r[0])
     return all_rows, pre_alerts_by_date, max_rid
-
-
-def find_end_time(all_rows, target_city, start_dt):
-    """Find the first END event (cat 13) for target_city after start_dt,
-    capped at start_dt + EVENT_WINDOW_MIN minutes."""
-    max_dt = start_dt + timedelta(minutes=EVENT_WINDOW_MIN)
-    for dt, cat, areas, _ad in all_rows:
-        if dt <= start_dt:
-            continue
-        if dt > max_dt:
-            break
-        if cat == END_CATEGORY and any(city_matches(a, target_city) for a in areas):
-            return dt
-    return max_dt
-
-
-def find_sirens_in_window(all_rows, start_dt, end_dt):
-    """Return siren rows within [start_dt, end_dt)."""
-    results = []
-    for dt, cat, areas, _ad in all_rows:
-        if dt < start_dt:
-            continue
-        if dt >= end_dt:
-            break
-        if cat in HIST_ALERT_CATEGORIES:
-            results.append((dt, areas))
-    return results
-
-
-def compute_gap(target_city, cohort_cities, sirens):
-    """Compute the gap between first cohort siren and target city siren.
-
-    Returns (gap_seconds, outcome, cohort_sirens_count).
-      gap_seconds: float or None if target never got a siren
-      outcome: 'immediate' | 'hit_after_gap' | 'miss'
-      cohort_sirens_count: how many cohort cities got sirens
-    """
-    city_siren_time = None
-    first_cohort_time = None
-    seen_cohort = set()
-
-    for dt, areas in sirens:
-        for area in areas:
-            if city_matches(area, target_city) and city_siren_time is None:
-                city_siren_time = dt
-            for cc in cohort_cities:
-                if city_matches(area, cc) and cc not in seen_cohort:
-                    seen_cohort.add(cc)
-                    if first_cohort_time is None or dt < first_cohort_time:
-                        first_cohort_time = dt
-
-    if city_siren_time is None:
-        return None, "miss", len(seen_cohort)
-
-    if first_cohort_time is None or first_cohort_time >= city_siren_time:
-        return 0, "immediate", len(seen_cohort)
-
-    gap = (city_siren_time - first_cohort_time).total_seconds()
-    return gap, "hit_after_gap", len(seen_cohort)
 
 
 def analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt):
@@ -185,7 +125,7 @@ def analyze_all_cities(all_rows, pre_alerts_by_date, watermark_dt):
             for area in areas:
                 area_s = area.strip()
                 for blast_city in blast_list:
-                    if blast_city in area_s and blast_city not in city_first_siren:
+                    if blast_city == area_s and blast_city not in city_first_siren:
                         city_first_siren[blast_city] = dt
 
         # Compute gap for each city using precomputed first-siren times
