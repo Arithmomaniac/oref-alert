@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "npx playwright test",
-    "test:unit": "node web/test-engine.js"
+    "test:unit": "node web/test-engine.js && node web/test-alert-vm.js && node web/test-report-vm.js && node web/test-services.js"
   },
   "repository": {
     "type": "git",
