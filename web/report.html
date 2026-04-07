@@ -132,7 +132,8 @@
   <div id="threshold-table"></div>
 </div>
 
-<script>
+<script type="module">
+import { computeStats, fmtThresh, buildInsightText, buildStatCardsData, buildThresholdTableData } from "./report-vm.js";
 (function() {
   var SLOT_COLORS = ["#2196F3", "#F44336", "#4CAF50"];
   var DEFAULTS = ["\u05DB\u05E8\u05DE\u05D9\u05D0\u05DC", "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9", "\u05D7\u05E8\u05D9\u05E9"];
@@ -270,97 +271,7 @@
     return result;
   }
 
-  function computeStats(cityName) {
-    var events = gapData.cities[cityName];
-    var miss = 0, missWithSirens = 0, immediate = 0, gapIntervals = [];
-    var preAlertToSiren = [];
-    events.forEach(function(e) {
-      if (e.outcome === "miss") {
-        miss++;
-        if (e.cohort_sirens > 0) missWithSirens++;
-      } else if (e.outcome === "immediate") {
-        immediate++;
-      } else if (e.outcome === "hit_after_gap") {
-        gapIntervals.push(e.gap);
-      }
-      if (e.pre_alert_to_siren != null) {
-        preAlertToSiren.push(e.pre_alert_to_siren);
-      }
-    });
-    gapIntervals.sort(function(a, b) { return a - b; });
-    preAlertToSiren.sort(function(a, b) { return a - b; });
-
-    var maxThresh = 1200;
-    var thresholdValues = [];
-    for (var t = 0; t <= maxThresh; t += 30) thresholdValues.push(t);
-    var fnRates = thresholdValues.map(function(t) {
-      var fn = gapIntervals.filter(function(g) { return g > t; }).length;
-      var denom = missWithSirens + fn;
-      return denom > 0 ? Math.round(fn / denom * 1000) / 10 : 0;
-    });
-
-    var histBins = {};
-    gapIntervals.forEach(function(iv) {
-      var b = Math.floor(iv / 30) * 30;
-      histBins[b] = (histBins[b] || 0) + 1;
-    });
-
-    var preAlertHistBins = {};
-    preAlertToSiren.forEach(function(iv) {
-      var b = Math.floor(iv / 30) * 30;
-      preAlertHistBins[b] = (preAlertHistBins[b] || 0) + 1;
-    });
-
-    var paSirenStats = null;
-    var totalEvents = events.length;
-    var hitCount = preAlertToSiren.length;
-    if (totalEvents > 0) {
-      // Pad with Infinity for miss events so percentiles use the full denominator
-      var missCount = totalEvents - hitCount;
-      var padded = preAlertToSiren.slice();
-      for (var mi = 0; mi < missCount; mi++) padded.push(Infinity);
-      // padded is already sorted (finite values first, then Infinity)
-      function percentile(arr, pct) {
-        var idx = pct / 100 * (arr.length - 1);
-        var lo = Math.floor(idx), hi = Math.min(lo + 1, arr.length - 1);
-        if (!isFinite(arr[lo])) return null;
-        var frac = idx - lo;
-        if (frac === 0 || !isFinite(arr[hi])) return arr[lo];
-        return arr[lo] + frac * (arr[hi] - arr[lo]);
-      }
-      var med = percentile(padded, 50);
-      paSirenStats = {
-        min: hitCount > 0 ? preAlertToSiren[0] : null,
-        p5:  percentile(padded, 5),
-        p25: percentile(padded, 25),
-        median: med,
-        p75: percentile(padded, 75),
-        p95: percentile(padded, 95),
-        max: hitCount > 0 ? preAlertToSiren[hitCount - 1] : null,
-        hitCount: hitCount,
-        totalCount: totalEvents,
-        hitRate: hitCount / totalEvents
-      };
-    }
-
-    return {
-      miss: miss, missWithSirens: missWithSirens, immediate: immediate,
-      gapCount: gapIntervals.length, total: events.length,
-      gapIntervals: gapIntervals, fnRates: fnRates,
-      thresholdValues: thresholdValues, histBins: histBins,
-      preAlertToSiren: preAlertToSiren, preAlertHistBins: preAlertHistBins,
-      paSirenStats: paSirenStats
-    };
-  }
-
-  function fmtThresh(t) {
-    if (t === 0) return "0";
-    if (t < 60) return t + "s";
-    if (t % 60 === 0) return (t / 60) + "m";
-    return Math.floor(t / 60) + "m" + (t % 60 < 10 ? "0" : "") + (t % 60) + "s";
-  }
-
-  function destroyCharts() {
+  function destroyCharts(){
     for (var k in charts) { if (charts[k]) charts[k].destroy(); }
     charts = {};
   }
@@ -376,7 +287,7 @@
     }
 
     var stats = {};
-    selected.forEach(function(c) { stats[c] = computeStats(c); });
+    selected.forEach(function(c) { stats[c] = computeStats(gapData.cities[c]); });
     var colors = selected.map(function(_, i) { return SLOT_COLORS[i] || "#999"; });
 
     // Stat cards
