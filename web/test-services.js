@@ -16,6 +16,7 @@ globalThis.localStorage = {
 };
 globalThis.document = {
   addEventListener: function() {},
+  removeEventListener: function() {},
 };
 globalThis.window = { appInsights: null };
 globalThis.fetch = undefined;

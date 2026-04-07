@@ -291,20 +291,19 @@ import { computeStats, fmtThresh, buildInsightText, buildStatCardsData, buildThr
     var colors = selected.map(function(_, i) { return SLOT_COLORS[i] || "#999"; });
 
     // Stat cards
+    var cardsData = buildStatCardsData(selected, stats, thresholdsData, colors);
     var cardsHtml = "";
-    selected.forEach(function(c, i) {
-      var s = stats[c];
-      var th = thresholdsData.cities && thresholdsData.cities[c];
-      var threshStr = th ? th.stable_seconds + "s" : "N/A";
-      cardsHtml += '<div class="stat-card" style="border-top:3px solid ' + colors[i] + '">' +
-        '<div class="num">' + s.total + '</div>' +
-        '<div class="label">' + c + '</div>' +
+    cardsData.forEach(function(card) {
+      var s = stats[card.cityName];
+      cardsHtml += '<div class="stat-card" style="border-top:3px solid ' + card.color + '">' +
+        '<div class="num">' + card.total + '</div>' +
+        '<div class="label">' + card.cityName + '</div>' +
         '<div style="margin-top:6px;font-size:13px">' +
-          '<span style="color:#4CAF50">&#9679; ' + s.miss + ' miss</span> &nbsp;' +
-          '<span style="color:#FF9800">&#9679; ' + s.immediate + ' imm</span> &nbsp;' +
-          '<span style="color:#F44336">&#9679; ' + s.gapCount + ' gap</span>' +
+          '<span style="color:#4CAF50">&#9679; ' + card.miss + ' miss</span> &nbsp;' +
+          '<span style="color:#FF9800">&#9679; ' + card.immediate + ' imm</span> &nbsp;' +
+          '<span style="color:#F44336">&#9679; ' + card.gapCount + ' gap</span>' +
         '</div>' +
-        '<div style="margin-top:4px;font-size:12px;color:#999">Threshold: ' + threshStr + '</div>' +
+        '<div style="margin-top:4px;font-size:12px;color:#999">Threshold: ' + card.threshStr + '</div>' +
         '</div>';
     });
     document.getElementById("stat-cards").innerHTML = cardsHtml;
@@ -537,16 +536,7 @@ import { computeStats, fmtThresh, buildInsightText, buildStatCardsData, buildThr
     });
 
     // Insight box
-    var insightParts = [];
-    selected.forEach(function(c) {
-      var th = thresholdsData.cities && thresholdsData.cities[c];
-      if (th) {
-        insightParts.push("<strong>" + c + ": " + th.stable_seconds + "s</strong> (" +
-          (th.fn_rate * 100).toFixed(1) + "% FN, " + th.events + " events)");
-      }
-    });
-    document.getElementById("insight-box").innerHTML =
-      "Selected thresholds (\u22645% false negative rate): " + insightParts.join(" &nbsp;|&nbsp; ");
+    document.getElementById("insight-box").innerHTML = buildInsightText(selected, stats, thresholdsData);
 
     charts.fnRate = new Chart(document.getElementById("fnRateChart"), {
       type: "line",
@@ -573,19 +563,18 @@ import { computeStats, fmtThresh, buildInsightText, buildStatCardsData, buildThr
     });
 
     // Threshold table
+    var tableRows = buildThresholdTableData(selected, stats, thresholdsData, colors);
     var tableHtml = '<table style="border-collapse:collapse;margin:16px 0;background:white;box-shadow:0 2px 8px rgba(0,0,0,0.1);border-radius:8px;overflow:hidden;width:100%">';
     tableHtml += '<tr style="background:#f5f5f5"><th style="padding:8px 12px">City</th><th style="padding:8px 12px">Threshold</th><th style="padding:8px 12px">Events</th><th style="padding:8px 12px">FN Rate</th><th style="padding:8px 12px">Miss</th><th style="padding:8px 12px">Miss+sirens</th><th style="padding:8px 12px">Immediate</th><th style="padding:8px 12px">Gap</th></tr>';
-    selected.forEach(function(c, i) {
-      var s = stats[c];
-      var th = thresholdsData.cities && thresholdsData.cities[c];
-      tableHtml += '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px;font-weight:bold;border-left:3px solid ' + colors[i] + '">' + c + '</td>';
-      tableHtml += '<td style="padding:8px 12px">' + (th ? th.stable_seconds + "s" : "N/A") + '</td>';
-      tableHtml += '<td style="padding:8px 12px">' + s.total + '</td>';
-      tableHtml += '<td style="padding:8px 12px">' + (th ? (th.fn_rate * 100).toFixed(1) + "%" : "N/A") + '</td>';
-      tableHtml += '<td style="padding:8px 12px">' + s.miss + '</td>';
-      tableHtml += '<td style="padding:8px 12px">' + s.missWithSirens + '</td>';
-      tableHtml += '<td style="padding:8px 12px">' + s.immediate + '</td>';
-      tableHtml += '<td style="padding:8px 12px">' + s.gapCount + '</td></tr>';
+    tableRows.forEach(function(row) {
+      tableHtml += '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px;font-weight:bold;border-left:3px solid ' + row.color + '">' + row.cityName + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + row.threshold + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + row.events + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + row.fnRate + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + row.miss + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + row.missWithSirens + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + row.immediate + '</td>';
+      tableHtml += '<td style="padding:8px 12px">' + row.gapCount + '</td></tr>';
     });
     tableHtml += '</table>';
     document.getElementById("threshold-table").innerHTML = tableHtml;

@@ -72,7 +72,12 @@ export function createSessionManager(opts) {
       });
       checkTimer = setInterval(check, 60000);
     },
-    stop: function() { if (checkTimer) { clearInterval(checkTimer); checkTimer = null; } },
+    stop: function() {
+      if (checkTimer) { clearInterval(checkTimer); checkTimer = null; }
+      ["click", "touchstart", "keypress"].forEach(function(evt) {
+        document.removeEventListener(evt, resetActivity);
+      });
+    },
     resetActivity: resetActivity,
   };
 }

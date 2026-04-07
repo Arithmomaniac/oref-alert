@@ -230,6 +230,28 @@ function processState(state) {
   applyColor(result.color);
 }
 
+function onPollData(data) {
+  try {
+    processState(data);
+  } catch (e) {
+    svc.trackEvent("ProcessingError", { error: String(e) });
+  }
+}
+
+function onPollError() {
+  failCount++;
+  if (failCount >= 3) {
+    showWarning("\u26A0 \u05D0\u05D9\u05DF \u05D7\u05D9\u05D1\u05D5\u05E8"); // ⚠ אין חיבור
+  }
+}
+
+var statePoller = svc.createPoller({
+  url: "/api/state.json",
+  interval: POLL_INTERVAL,
+  onData: onPollData,
+  onError: onPollError,
+});
+
 function poll() {
   if (sessionExpired) return;
 
@@ -238,20 +260,7 @@ function poll() {
     loadThresholds();
   }
 
-  fetch("/api/state.json")
-    .then(function(r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    })
-    .then(function(data) {
-      processState(data);
-    })
-    .catch(function() {
-      failCount++;
-      if (failCount >= 3) {
-        showWarning("\u26A0 \u05D0\u05D9\u05DF \u05D7\u05D9\u05D1\u05D5\u05E8"); // ⚠ אין חיבור
-      }
-    });
+  statePoller.pollNow();
 }
 
 function showWarning(msg) {

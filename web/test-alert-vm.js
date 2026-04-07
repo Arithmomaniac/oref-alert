@@ -218,6 +218,55 @@ console.log("\n11. validateCity");
   assert(vm.validateCity("\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9", cities) === true, "valid city returns true");
   assert(vm.validateCity("\u05E2\u05D9\u05E8 \u05DC\u05D0 \u05E7\u05D9\u05D9\u05DE\u05EA", cities) === false, "invalid city returns false");
   assert(vm.validateCity("\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9", null) === true, "null list \u2192 true (can't validate)");
+  assert(vm.validateCity(null, cities) === false, "null city returns false");
+}
+
+// ── Test 12: fmtDuration edge cases (rounding bug fix) ─────
+
+console.log("\n12. fmtDuration edge cases");
+{
+  // The original Math.round bug: 119.5 % 60 = 59.5, Math.round(59.5) = 60 → "1:60"
+  assert(vm.fmtDuration(119.5) === "1:59", "119.5 → 1:59 (not 1:60)");
+  assert(vm.fmtDuration(179.5) === "2:59", "179.5 → 2:59 (not 2:60)");
+  assert(vm.fmtDuration(59.5) === "59 \u05E9\u05E0\u05D9\u05D5\u05EA", "59.5 → 59 שניות (not 60)");
+  assert(vm.fmtDuration(60) === "1:00", "60 → 1:00");
+  assert(vm.fmtDuration(0) === "0 \u05E9\u05E0\u05D9\u05D5\u05EA", "0 → 0 שניות");
+  assert(vm.fmtDuration(NaN) === null, "NaN → null");
+  assert(vm.fmtDuration(undefined) === null, "undefined → null");
+}
+
+// ── Test 13: deriveAlertVM — likely_passed with null threshold ─
+
+console.log("\n13. deriveAlertVM — likely_passed with null stableThresholdMs");
+{
+  var es13 = engine.createState({ stableThresholdMs: null });
+  var avm13 = vm.deriveAlertVM("likely_passed", es13, "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9");
+  assert(avm13.showHelpBtn === true, "showHelpBtn is true");
+  assert(avm13.helpPanelData !== null, "helpPanelData exists");
+  assert(avm13.helpPanelData.threshFormatted === null, "threshFormatted is null (not '0 שניות')");
+}
+
+// ── Test 14: deriveAlertVM — unknown color ──────────────────
+
+console.log("\n14. deriveAlertVM — unknown color");
+{
+  var es14 = engine.createState();
+  var avm14 = vm.deriveAlertVM("escalated", es14, "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9");
+  assert(avm14.bgColor === "#9e9e9e", "unknown color → neutral gray bg");
+  assert(avm14.statusLabel.indexOf("\u05DC\u05D0 \u05D9\u05D3\u05D5\u05E2") !== -1, "label indicates unknown state");
+  assert(avm14.showHelpBtn === false, "no help button for unknown");
+}
+
+// ── Test 15: deriveAlertVM — pre_alert with no city thresholds ─
+
+console.log("\n15. deriveAlertVM — pre_alert without city thresholds");
+{
+  var es15 = engine.createState();
+  es15.thresholdsData = { cities: {} };
+  es15.currentRecord = { type: "pre_alert", time: Math.floor(Date.now() / 1000) };
+  var avm15 = vm.deriveAlertVM("pre_alert", es15, "\u05E2\u05D9\u05E8 \u05DC\u05D0 \u05E7\u05D9\u05D9\u05DE\u05EA");
+  assert(avm15.showHelpBtn === false, "no help btn when city not in thresholds");
+  assert(avm15.preAlertInfo.show === false, "no pre-alert info when city not in thresholds");
 }
 
 // ── Summary ─────────────────────────────────────────────────

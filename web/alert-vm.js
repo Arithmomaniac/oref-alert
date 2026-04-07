@@ -13,9 +13,10 @@ export var COLOR_MAP = {
 
 // Build a formatted duration string like "1:30" or "45 שניות"
 export function fmtDuration(sec) {
-  if (sec == null) return null;
-  var m = Math.floor(sec / 60);
-  var s = Math.round(sec % 60);
+  if (sec == null || isNaN(sec)) return null;
+  var totalSec = Math.floor(sec);
+  var m = Math.floor(totalSec / 60);
+  var s = totalSec % 60;
   if (m > 0) return m + ":" + String(s).padStart(2, "0");
   return s + " \u05E9\u05E0\u05D9\u05D5\u05EA"; // שניות
 }
@@ -30,7 +31,10 @@ export function fmtDuration(sec) {
  * @returns {object} View-model describing what the UI should show
  */
 export function deriveAlertVM(color, engineState, city) {
-  var info = COLOR_MAP[color] || COLOR_MAP.green;
+  var info = COLOR_MAP[color];
+  if (!info) {
+    info = { bg: "#9e9e9e", label: "\u05DE\u05E6\u05D1 \u05DC\u05D0 \u05D9\u05D3\u05D5\u05E2" }; // מצב לא ידוע
+  }
   var ci = engineState.thresholdsData && engineState.thresholdsData.cities &&
            engineState.thresholdsData.cities[city];
 
@@ -44,8 +48,9 @@ export function deriveAlertVM(color, engineState, city) {
   };
 
   if (color === "likely_passed") {
-    var threshSec = Math.round(engineState.stableThresholdMs / 1000);
-    var threshFormatted = fmtDuration(threshSec);
+    var threshFormatted = engineState.stableThresholdMs != null
+      ? fmtDuration(Math.round(engineState.stableThresholdMs / 1000))
+      : null;
 
     vm.showHelpBtn = true;
     vm.helpPanelData = {
