@@ -50,8 +50,8 @@ resource functionFailureAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15
             { name: 'lastResultCode', operator: 'Include', values: ['*'] }
           ]
           failingPeriods: {
-            numberOfEvaluationPeriods: 1
-            minFailingPeriodsToAlert: 1
+            numberOfEvaluationPeriods: 3
+            minFailingPeriodsToAlert: 2
           }
         }
       ]
@@ -64,12 +64,14 @@ resource functionFailureAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15
 }
 
 // Alert: Errors logged (severityLevel >= 3 = Error+)
+// Transient fetch failures are logged at WARNING level and won't reach this alert.
+// Only genuine errors (upload failures, computation errors) trigger here.
 resource errorLogAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
   name: '${functionAppName}-error-logs'
   location: location
   properties: {
     displayName: 'Oref Alert: Errors in application logs'
-    description: 'Error-level log entries appeared in traces — may indicate alert-fetch, storage, or processing failures.'
+    description: 'Error-level log entries appeared in traces — may indicate storage or processing failures.'
     severity: 2
     enabled: true
     evaluationFrequency: 'PT15M'
@@ -86,8 +88,8 @@ resource errorLogAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15-previe
             { name: 'errors', operator: 'Include', values: ['*'] }
           ]
           failingPeriods: {
-            numberOfEvaluationPeriods: 1
-            minFailingPeriodsToAlert: 1
+            numberOfEvaluationPeriods: 3
+            minFailingPeriodsToAlert: 2
           }
         }
       ]
@@ -122,8 +124,8 @@ resource clientExceptionAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15
             { name: 'types', operator: 'Include', values: ['*'] }
           ]
           failingPeriods: {
-            numberOfEvaluationPeriods: 1
-            minFailingPeriodsToAlert: 1
+            numberOfEvaluationPeriods: 3
+            minFailingPeriodsToAlert: 2
           }
         }
       ]

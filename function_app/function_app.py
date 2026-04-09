@@ -95,7 +95,7 @@ def _fetch_oref_data() -> tuple[list | dict, list]:
             alerts = _parse_alerts(_clean_response_text(resp.content))
             _last_alerts = alerts
         except Exception:
-            logging.exception("Failed to fetch Alerts.json — using last known value")
+            logging.warning("Failed to fetch Alerts.json — using last known value", exc_info=True)
 
         # --- History ---
         try:
@@ -104,7 +104,7 @@ def _fetch_oref_data() -> tuple[list | dict, list]:
             history = _parse_history(_clean_response_text(resp.content))
             _last_history = history
         except Exception:
-            logging.exception("Failed to fetch AlertsHistory.json — using last known value")
+            logging.warning("Failed to fetch AlertsHistory.json — using last known value", exc_info=True)
 
     return alerts, history
 
@@ -507,7 +507,7 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
         logging.info("Refreshed cities.json: %d cities", len(labels))
     except Exception:
         labels = None
-        logging.exception("Failed to refresh cities.json — keeping previous version")
+        logging.warning("Failed to refresh cities.json — keeping previous version", exc_info=True)
 
     # Generate cities-geo.json (name → lat/lng) for browser geolocation → city lookup.
     # Only include cities whose names exactly match the canonical oref city list to avoid
@@ -537,7 +537,7 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
                 len(geo_list), len(labels),
             )
         except Exception:
-            logging.exception("Failed to refresh cities-geo.json — keeping previous version")
+            logging.warning("Failed to refresh cities-geo.json — keeping previous version", exc_info=True)
 
     # Generate polygons.json (name → polygon coords) for server-side point-in-polygon.
     # polygons.json from eladnava is keyed by numeric city ID; map to names via cities.json.
@@ -557,4 +557,4 @@ def compute_thresholds(timer: func.TimerRequest) -> None:
                 len(named_polygons), len(raw_polygons),
             )
         except Exception:
-            logging.exception("Failed to refresh polygons.json — keeping previous version")
+            logging.warning("Failed to refresh polygons.json — keeping previous version", exc_info=True)
