@@ -1,6 +1,6 @@
 {
   "name": "oref-alert",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Fullscreen traffic-light alert for Israeli cities.",
   "type": "module",
   "scripts": {
@@ -19,6 +19,6 @@
   },
   "homepage": "https://github.com/Arithmomaniac/oref-alert#readme",
   "devDependencies": {
-    "@playwright/test": "^1.59.0"
+    "@playwright/test": "^1.60.0"
   }
 }

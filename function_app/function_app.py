@@ -1,13 +1,14 @@
 """
 Azure Function: Pikud HaOref Alert Poller
 
-Polls the Israeli Home Front Command (oref.org.il) real-time alert and history
-APIs every 5 seconds, combines the results, and writes a state.json snapshot
-to the $web blob container for static-site consumption.
+Polls the Israeli Home Front Command (oref.org.il) real-time alert API every
+5 seconds, combines it with recent history feeds, and writes a state.json
+snapshot to the $web blob container for static-site consumption.
 
 API quirks handled here:
   - Alerts.json may return a JSON array, a JSON object, or an empty string.
-  - AlertsHistory.json returns a JSON array.
+  - AlertsHistory.json returns a JSON array, but may lag or omit some alert
+    categories; GetAlarmsHistory.aspx is used as a supplemental history feed.
   - Responses are encoded with BOM (utf-8-sig) and may contain null bytes.
   - SSL certificates occasionally fail verification.
 """
@@ -43,10 +44,14 @@ OREF_HEADERS = {
 
 ALERTS_URL = "https://www.oref.org.il/warningMessages/alert/Alerts.json"
 HISTORY_URL = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json"
+HISTORY2_URL = "https://alerts-history.oref.org.il/Shared/Ajax/GetAlarmsHistory.aspx?lang=he&mode=1"
 
 # Last-known-good values so a single failed fetch doesn't wipe the state
-_last_alerts: list | dict = []
+_last_alerts: list = []
 _last_history: list = []
+_last_history2: list = []
+_last_history2_fetch_monotonic = 0.0
+HISTORY2_REFRESH_SECONDS = 20
 
 
 def _clean_response_text(raw: bytes) -> str:
@@ -55,36 +60,89 @@ def _clean_response_text(raw: bytes) -> str:
     return text.replace("\x00", "")
 
 
-def _parse_alerts(text: str) -> list | dict:
+def _parse_alerts(text: str) -> list:
     """Parse the Alerts.json payload.
 
-    Returns the parsed JSON (array or object) or an empty list when the
-    endpoint returns an empty body (which is normal when there are no alerts).
+    Returns a list of alert objects.  The endpoint returns either an array, a
+    single object, or an empty body depending on alert count.
     """
     text = text.strip()
     if not text:
         return []
-    return json.loads(text)
+    parsed = json.loads(text)
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        return [parsed]
+    return []
 
 
 def _parse_history(text: str) -> list:
-    """Parse the AlertsHistory.json payload (always a JSON array)."""
+    """Parse a history payload (always a JSON array)."""
     text = text.strip()
     if not text:
         return []
     return json.loads(text)
 
 
-def _fetch_oref_data() -> tuple[list | dict, list]:
+def _normalize_history2_record(record: dict) -> dict:
+    """Convert GetAlarmsHistory.aspx rows to AlertsHistory.json shape."""
+    alert_date = str(record.get("alertDate", "")).replace("T", " ")
+    date_str = str(record.get("date", ""))
+    time_str = str(record.get("time", ""))
+    if date_str and time_str:
+        try:
+            day, month, year = date_str.split(".")
+            alert_date = f"{year}-{month}-{day} {time_str}"
+        except ValueError:
+            pass
+
+    return {
+        "alertDate": alert_date,
+        "title": record.get("category_desc", record.get("title", "")),
+        "data": record.get("data", ""),
+        "category": record.get("category"),
+    }
+
+
+def _parse_history2(text: str) -> list:
+    """Parse and normalize alerts-history.oref.org.il history rows."""
+    rows = _parse_history(text)
+    return [_normalize_history2_record(row) for row in rows if isinstance(row, dict)]
+
+
+def _merge_history(*histories: list) -> list:
+    """Merge history feeds, dedupe equivalent rows, and keep newest first."""
+    merged = []
+    seen = set()
+    for history in histories:
+        for row in history:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                str(row.get("alertDate") or ""),
+                str(row.get("data") or ""),
+                str(row.get("category") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+    merged.sort(key=lambda row: str(row.get("alertDate") or ""), reverse=True)
+    return merged
+
+
+def _fetch_oref_data() -> tuple[list, list]:
     """Fetch both oref endpoints synchronously.
 
     Returns (alerts, history). On per-endpoint failure the last known good
     value is returned so the caller always gets usable data.
     """
-    global _last_alerts, _last_history
+    global _last_alerts, _last_history, _last_history2, _last_history2_fetch_monotonic
 
     alerts = _last_alerts
     history = _last_history
+    history2 = _last_history2
 
     # SSL verification relaxed — oref.org.il occasionally has cert issues
     with httpx.Client(headers=OREF_HEADERS, verify=False, timeout=10.0) as client:
@@ -106,7 +164,18 @@ def _fetch_oref_data() -> tuple[list | dict, list]:
         except Exception:
             logging.warning("Failed to fetch AlertsHistory.json — using last known value", exc_info=True)
 
-    return alerts, history
+        # --- Alternate history ---
+        if (_time.monotonic() - _last_history2_fetch_monotonic) >= HISTORY2_REFRESH_SECONDS:
+            _last_history2_fetch_monotonic = _time.monotonic()
+            try:
+                resp = client.get(HISTORY2_URL)
+                resp.raise_for_status()
+                history2 = _parse_history2(_clean_response_text(resp.content))
+                _last_history2 = history2
+            except Exception:
+                logging.warning("Failed to fetch GetAlarmsHistory.aspx — using last known value", exc_info=True)
+
+    return alerts, _merge_history(history, history2)
 
 
 def _upload_state(state: dict) -> None:
