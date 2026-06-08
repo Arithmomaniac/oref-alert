@@ -163,6 +163,20 @@ console.log("\n4. Siren for our city → red");
   assertColor(r1, "red", "siren for our city → red");
 }
 
+// ── Test 4b: Single-object realtime alert → red ──
+
+console.log("\n4b. Single-object realtime alert → red");
+{
+  var es = engine.createState({ stableThresholdMs: 240000 });
+  var now = tMs("09:00:40");
+
+  var state1 = makeStateJson(
+    { cat: "1", title: "ירי רקטות וטילים", data: [CITY, ...COHORT] },
+  );
+  var r1 = engine.processState(state1, es, CITY, now);
+  assertColor(r1, "red", "single-object realtime siren for our city → red");
+}
+
 // ── Test 5: Cohort siren trickle does NOT reset timer (first-siren anchor) ──
 
 console.log("\n5. Cohort siren trickle does NOT reset timer (first-siren)");

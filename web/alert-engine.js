@@ -78,6 +78,12 @@ export function parseAlertDate(s) {
   return new Date(s.replace(" ", "T"));
 }
 
+export function normalizeAlerts(alerts) {
+  if (Array.isArray(alerts)) return alerts;
+  if (alerts && typeof alerts === "object") return [alerts];
+  return [];
+}
+
 // ── Classification ─────────────────────────────────────────────
 
 export function classifyRealtime(cat, title) {
@@ -184,6 +190,7 @@ export function removeExpired(es, nowMs) {
  */
 export function processState(state, es, city, nowMs) {
   var events = [];
+  var alerts = normalizeAlerts(state.alerts);
 
   // Check staleness
   var staleWarning = null;
@@ -197,75 +204,71 @@ export function processState(state, es, city, nowMs) {
 
   // ── Pass 1: Process real-time alerts ──────────────────────
   var newRtKeys = new Set();
-  if (Array.isArray(state.alerts)) {
-    for (var i = 0; i < state.alerts.length; i++) {
-      var a = state.alerts[i];
-      var cat = parseInt(a.cat, 10);
-      var title = a.title || "";
-      var data = a.data || [];
-      var rtKey = cat + "|" + title + "|" + data.join(",");
-      newRtKeys.add(rtKey);
+  for (var i = 0; i < alerts.length; i++) {
+    var a = alerts[i];
+    var cat = parseInt(a.cat, 10);
+    var title = a.title || "";
+    var data = a.data || [];
+    var rtKey = cat + "|" + title + "|" + data.join(",");
+    newRtKeys.add(rtKey);
 
-      if (es.lastRtKeys.has(rtKey)) continue;
+    if (es.lastRtKeys.has(rtKey)) continue;
 
-      var cityMatch = false;
-      for (var j = 0; j < data.length; j++) {
-        if (data[j] === city) { cityMatch = true; break; }
-      }
-      if (!cityMatch) continue;
+    var cityMatch = false;
+    for (var j = 0; j < data.length; j++) {
+      if (data[j] === city) { cityMatch = true; break; }
+    }
+    if (!cityMatch) continue;
 
-      var cl = classifyRealtime(cat, title);
-      if (cl.type === null) continue;
+    var cl = classifyRealtime(cat, title);
+    if (cl.type === null) continue;
 
-      var timeSec = Math.floor(nowMs / 1000);
-      var rec = makeRecord(cl.type, cl.histCat, title, timeSec);
-      var changed = shouldUpdate(rec, es.currentRecord);
-      if (changed) {
-        es.currentRecord = rec;
-        // Store original poll time for backdating reference (prevents cumulative drift)
-        if (cl.type === PRE_ALERT) {
-          es._rtPollTimeSec = timeSec;
-        }
-      }
-
-      // Cohort tracking on PRE_ALERT
+    var timeSec = Math.floor(nowMs / 1000);
+    var rec = makeRecord(cl.type, cl.histCat, title, timeSec);
+    var changed = shouldUpdate(rec, es.currentRecord);
+    if (changed) {
+      es.currentRecord = rec;
+      // Store original poll time for backdating reference (prevents cumulative drift)
       if (cl.type === PRE_ALERT) {
-        var newCohort = new Set(data.filter(function(d) { return d !== city; }));
-        if (!setsEqual(newCohort, es.cohortCities)) {
-          es.cohortCities = newCohort;
-          es.sirenCohortCities = new Set();
-          es.firstCohortSirenMs = null;
-        }
+        es._rtPollTimeSec = timeSec;
       }
-      // Clear cohort when leaving PRE_ALERT
-      if (cl.type !== PRE_ALERT && changed) {
-        es.cohortCities = new Set();
+    }
+
+    // Cohort tracking on PRE_ALERT
+    if (cl.type === PRE_ALERT) {
+      var newCohort = new Set(data.filter(function(d) { return d !== city; }));
+      if (!setsEqual(newCohort, es.cohortCities)) {
+        es.cohortCities = newCohort;
         es.sirenCohortCities = new Set();
         es.firstCohortSirenMs = null;
       }
-
-      var evColor = getColor(rec, es, nowMs) === "green" ? "green" : getColor(rec, es, nowMs) === "red" ? "red" : "pre_alert";
-      events.push({ dotColor: evColor, title: title, source: "RT", causedChange: changed });
     }
+    // Clear cohort when leaving PRE_ALERT
+    if (cl.type !== PRE_ALERT && changed) {
+      es.cohortCities = new Set();
+      es.sirenCohortCities = new Set();
+      es.firstCohortSirenMs = null;
+    }
+
+    var evColor = getColor(rec, es, nowMs) === "green" ? "green" : getColor(rec, es, nowMs) === "red" ? "red" : "pre_alert";
+    events.push({ dotColor: evColor, title: title, source: "RT", causedChange: changed });
   }
   es.lastRtKeys = newRtKeys;
 
   // ── Pass 2: check if cohort cities have sirens ────────────
   if (es.cohortCities.size > 0 && es.currentRecord && es.currentRecord.type === PRE_ALERT) {
-    if (Array.isArray(state.alerts)) {
-      for (var p2 = 0; p2 < state.alerts.length; p2++) {
-        var a2 = state.alerts[p2];
-        var cat2 = parseInt(a2.cat, 10);
-        var cl2 = classifyRealtime(cat2, a2.title || "");
-        if (cl2.type !== ALERT) continue;
+    for (var p2 = 0; p2 < alerts.length; p2++) {
+      var a2 = alerts[p2];
+      var cat2 = parseInt(a2.cat, 10);
+      var cl2 = classifyRealtime(cat2, a2.title || "");
+      if (cl2.type !== ALERT) continue;
 
-        var data2 = a2.data || [];
-        for (var d2 = 0; d2 < data2.length; d2++) {
-          if (es.cohortCities.has(data2[d2]) && !es.sirenCohortCities.has(data2[d2])) {
-            es.sirenCohortCities.add(data2[d2]);
-            if (es.firstCohortSirenMs === null) {
-              es.firstCohortSirenMs = nowMs;
-            }
+      var data2 = a2.data || [];
+      for (var d2 = 0; d2 < data2.length; d2++) {
+        if (es.cohortCities.has(data2[d2]) && !es.sirenCohortCities.has(data2[d2])) {
+          es.sirenCohortCities.add(data2[d2]);
+          if (es.firstCohortSirenMs === null) {
+            es.firstCohortSirenMs = nowMs;
           }
         }
       }
