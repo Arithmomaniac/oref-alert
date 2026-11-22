@@ -1,6 +1,6 @@
 {
   "name": "oref-alert",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Fullscreen traffic-light alert for Israeli cities.",
   "type": "module",
   "scripts": {

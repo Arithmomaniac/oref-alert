@@ -1,6 +1,6 @@
 /**
  * Local dev server with mock data to preview the alert display.
- * Usage: node dev-server.js [scenario]
+ * Usage: node dev-server.cjs [scenario]
  *
  * Scenarios: green, pre_alert, siren_window, likely_passed (default), red
  * Open http://localhost:3000/?city=בית שמש
@@ -15,8 +15,6 @@ var scenario = process.argv[2] || "likely_passed";
 var CITY = "\u05D1\u05D9\u05EA \u05E9\u05DE\u05E9"; // בית שמש
 
 // ── Mock data for each scenario ────────────────────────────────
-
-var nowIso = new Date().toISOString().replace("T", " ").slice(0, 19);
 
 function minutesAgo(m) {
   var d = new Date(Date.now() - m * 60000);
@@ -172,10 +170,15 @@ http.createServer(function (req, res) {
 
   // API mock endpoints
   if (url === "/api/state.json") {
+    var stamp = new Date().toISOString();
     var state = {
       alerts: scenarioData.alerts,
       history: scenarioData.history,
-      updated_at: new Date().toISOString(),
+      updated_at: stamp,
+      feeds: {
+        live: { ok: true, last_success_at: stamp },
+        history: { ok: true, last_success_at: stamp },
+      },
     };
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(state));
@@ -242,5 +245,5 @@ http.createServer(function (req, res) {
   console.log("Dev server running at http://localhost:" + PORT + "/?city=" + encodeURIComponent(CITY));
   console.log("Scenario: " + scenario.toUpperCase());
   console.log("");
-  console.log("Available scenarios: node dev-server.js [green|pre_alert|siren_window|likely_passed|red]");
+  console.log("Available scenarios: node dev-server.cjs [green|pre_alert|siren_window|likely_passed|red]");
 });

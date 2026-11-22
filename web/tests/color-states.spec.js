@@ -1,6 +1,7 @@
 // @ts-check
 import { test, expect } from "@playwright/test";
 import http from "http";
+import { execFileSync } from "node:child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -11,6 +12,7 @@ const __dirname = path.dirname(__filename);
 const WEB_DIR = path.resolve(__dirname, "..");
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
 const CITY = "בית שמש";
+test.beforeEach(({ context }) => context.route("https://**", route => route.abort()));
 
 /**
  * Start a local HTTP server that serves index.html and mock API responses.
@@ -52,7 +54,7 @@ function startMockServer(fixtureFile) {
 
     if (url.pathname === "/api/state.json") {
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(stateData);
+      res.end(stateData.replaceAll("$NOW", new Date().toISOString()));
       return;
     }
     if (url.pathname === "/api/thresholds.json") {
@@ -114,6 +116,22 @@ test.describe("Alert display color states", () => {
   /** @type {{ server: http.Server, port: number, url: string }} */
   let mock;
 
+  test("backend snapshot displays a live siren during a history outage", async ({ page }) => {
+    test.skip(!process.env.TEST_POLLER, "Requires Python with function_app dependencies");
+    const body = execFileSync("python", [path.join(WEB_DIR, "..", "tests", "emit_siren_snapshot.py"), CITY],
+      { encoding: "utf8" });
+    mock = await startMockServer("state-green.json");
+    try {
+      await page.route("**/api/state.json", route => route.fulfill({ contentType: "application/json", body }));
+      await page.route("**/orefalert-func.azurewebsites.net/**", route => route.fulfill({ json: {} }));
+      await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
+      await expect(page.locator("#status-text")).toContainText("אזעקה");
+      await expect(page.getByText(/היסטורי/).first()).toBeVisible();
+    } finally {
+      mock.server.close();
+    }
+  });
+
   for (const [color, fixture] of [
     ["green", "state-green.json"],
     ["pre_alert", "state-pre_alert.json"],
@@ -165,6 +183,55 @@ test.describe("Alert display color states", () => {
         mock.server.close();
       }
     });
+  }
+});
+
+test("startup, frozen snapshot, network loss and recovery", async ({ page }) => {
+  const mock = await startMockServer("state-green.json");
+  const time = new Date("2026-04-01T12:00:00Z");
+  const good = { ok: true, last_success_at: time.toISOString() };
+  let snapshot = { alerts: [], history: [], updated_at: time.toISOString(),
+    feeds: { live: good, history: good } };
+  let offline = false;
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  try {
+    await page.clock.install({ time });
+    await page.route("**/api/state.json", async route => {
+      await held;
+      if (offline) return route.abort();
+      return route.fulfill({ json: snapshot });
+    });
+    await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
+    const status = page.locator("#status-text");
+    const warning = page.locator("#conn-warning");
+    await expect(status).toHaveText("מצב ההתרעות לא ידוע");
+    release();
+    await expect(status).toHaveText(EXPECTED.green.text);
+    await page.clock.fastForward(65000);
+    await expect(status).toHaveText("מצב ההתרעות לא ידוע");
+    await expect(warning).toBeVisible();
+    const stamp = await page.evaluate(() => new Date().toISOString());
+    snapshot = { ...snapshot, updated_at: stamp, alerts: [{ cat: "1", data: [CITY] }],
+      feeds: { live: { ok: true, last_success_at: stamp }, history: good } };
+    await page.clock.fastForward(5000);
+    await expect(status).toContainText("אזעקה");
+    await expect(warning).toContainText("היסטוריית");
+    offline = true;
+    await page.clock.fastForward(5000);
+    await expect(warning).toContainText("אין חיבור");
+    await expect(status).toContainText("אזעקה");
+    offline = false;
+    snapshot.alerts = [{ cat: "10", title: "הסתיים", data: [CITY] }];
+    const recovered = await page.evaluate(() => new Date().toISOString());
+    snapshot.updated_at = recovered;
+    snapshot.feeds.live = snapshot.feeds.history = { ok: true, last_success_at: recovered };
+    await page.clock.fastForward(5000);
+    await expect(status).toHaveText(EXPECTED.green.text);
+    await expect(warning).toBeHidden();
+  } finally {
+    release();
+    mock.server.close();
   }
 });
 

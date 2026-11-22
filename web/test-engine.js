@@ -10,6 +10,13 @@
 
 import * as engine from "./alert-engine.js";
 
+// Existing scenario timelines represent a new successful read at each poll.
+function healthyPoll(state, es, city, ms) {
+  const stamp = new Date(ms).toISOString();
+  const good = { ok: true, last_success_at: stamp };
+  return engine.processState({ ...state, updated_at: stamp, feeds: { live: good, history: good } }, es, city, ms);
+}
+
 var passed = 0;
 var failed = 0;
 
@@ -58,7 +65,7 @@ console.log("\n1. Happy path — real-time amber");
     { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: [CITY, ...COHORT] },
   ]);
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assertColor(r1, "pre_alert", "PRE_ALERT → pre_alert");
   assert(es.cohortCities.size === 3, "cohortCities has 3 cities");
 
@@ -69,13 +76,13 @@ console.log("\n1. Happy path — real-time amber");
       data: [CITY, ...COHORT] },
     { cat: "1", title: "ירי רקטות וטילים", data: COHORT },
   ]);
-  var r2 = engine.processState(state2, es, CITY, now);
+  var r2 = healthyPoll(state2, es, CITY, now);
   assertColor(r2, "pre_alert", "sirens just started → still pre_alert (threshold not met)");
   assert(es.sirenCohortCities.size === 3, "all 3 cohort cities detected");
 
   // Poll 3: 240s later — threshold elapsed
   now += 240000;
-  var r3 = engine.processState(state2, es, CITY, now);
+  var r3 = healthyPoll(state2, es, CITY, now);
   assertColor(r3, "likely_passed", "240s elapsed → amber");
 }
 
@@ -110,7 +117,7 @@ console.log("\n2. History-only PRE_ALERT — amber via cohort reconstruction (bu
         data: "חולון", category: 1 },
     ],
   );
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assertColor(r1, "likely_passed", "history cohort reconstruction → amber");
   assert(es.cohortCities.size === 3, "cohortCities reconstructed from history");
   assert(es.sirenCohortCities.size === 3, "sirenCohortCities populated from history");
@@ -128,7 +135,7 @@ console.log("\n3. END before threshold elapses");
     { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: [CITY, ...COHORT] },
   ]);
-  engine.processState(state1, es, CITY, now);
+  healthyPoll(state1, es, CITY, now);
 
   // Sirens after 6 min
   now += 360000;
@@ -137,7 +144,7 @@ console.log("\n3. END before threshold elapses");
       data: [CITY, ...COHORT] },
     { cat: "1", title: "ירי רקטות וטילים", data: COHORT },
   ]);
-  engine.processState(state2, es, CITY, now);
+  healthyPoll(state2, es, CITY, now);
 
   // END arrives 60s later (only 60s after sirens, well before 240s threshold)
   now += 60000;
@@ -145,7 +152,7 @@ console.log("\n3. END before threshold elapses");
     [{ cat: "10", title: "האירוע הסתיים", data: [CITY] }],
     [{ alertDate: "2026-04-01 09:07:40", title: "האירוע הסתיים", data: CITY, category: 13 }],
   );
-  var r3 = engine.processState(state3, es, CITY, now);
+  var r3 = healthyPoll(state3, es, CITY, now);
   assertColor(r3, "green", "END before 240s → green (correctly no amber)");
 }
 
@@ -159,7 +166,7 @@ console.log("\n4. Siren for our city → red");
   var state1 = makeStateJson([
     { cat: "1", title: "ירי רקטות וטילים", data: [CITY, ...COHORT] },
   ]);
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assertColor(r1, "red", "siren for our city → red");
 }
 
@@ -173,7 +180,7 @@ console.log("\n4b. Single-object realtime alert → red");
   var state1 = makeStateJson(
     { cat: "1", title: "ירי רקטות וטילים", data: [CITY, ...COHORT] },
   );
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assertColor(r1, "red", "single-object realtime siren for our city → red");
 }
 
@@ -189,7 +196,7 @@ console.log("\n5. Cohort siren trickle does NOT reset timer (first-siren)");
     { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: [CITY, ...COHORT, "כרמיאל"] },
   ]);
-  engine.processState(state1, es, CITY, now);
+  healthyPoll(state1, es, CITY, now);
 
   // First batch of sirens (3 cities)
   now += 360000; // 6 min later
@@ -198,7 +205,7 @@ console.log("\n5. Cohort siren trickle does NOT reset timer (first-siren)");
       data: [CITY, ...COHORT, "כרמיאל"] },
     { cat: "1", title: "ירי רקטות וטילים", data: COHORT },
   ]);
-  engine.processState(state2, es, CITY, now);
+  healthyPoll(state2, es, CITY, now);
   var firstSiren1 = es.firstCohortSirenMs;
 
   // New cohort city siren trickles in 30s later
@@ -209,13 +216,13 @@ console.log("\n5. Cohort siren trickle does NOT reset timer (first-siren)");
     { cat: "1", title: "ירי רקטות וטילים", data: COHORT },
     { cat: "1", title: "ירי רקטות וטילים", data: ["כרמיאל"] },
   ]);
-  engine.processState(state3, es, CITY, now);
+  healthyPoll(state3, es, CITY, now);
   assert(es.firstCohortSirenMs === firstSiren1, "timer NOT reset when new cohort city detected (first-siren anchor)");
   assert(es.sirenCohortCities.size === 4, "4 cohort cities now tracked");
 
   // 240s after the FIRST batch (not the trickle) → amber
   now = firstSiren1 + 240000;
-  var r4 = engine.processState(state3, es, CITY, now);
+  var r4 = healthyPoll(state3, es, CITY, now);
   assertColor(r4, "likely_passed", "240s after first siren → amber");
 }
 
@@ -230,13 +237,13 @@ console.log("\n6. PRE_ALERT expiry after 180 minutes");
     { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: [CITY, ...COHORT] },
   ]);
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assertColor(r1, "pre_alert", "PRE_ALERT → pre_alert");
 
   // 181 minutes later (past 180-min expiry), no more alerts
   now += 181 * 60 * 1000;
   var state2 = makeStateJson([], []);
-  var r2 = engine.processState(state2, es, CITY, now);
+  var r2 = healthyPoll(state2, es, CITY, now);
   assertColor(r2, "green", "181 minutes later → expired → green");
 }
 
@@ -253,13 +260,13 @@ console.log("\n7. RT alert dedup across polls");
   ]);
 
   // First poll — processes the PRE_ALERT
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assert(r1.events.length > 0, "first poll produces events");
   var eventCount1 = r1.events.filter(function(e) { return e.source === "RT"; }).length;
 
   // Second poll with identical state — should dedup
   now += 5000;
-  var r2 = engine.processState(state1, es, CITY, now);
+  var r2 = healthyPoll(state1, es, CITY, now);
   var eventCount2 = r2.events.filter(function(e) { return e.source === "RT"; }).length;
   assert(eventCount2 === 0, "second poll with same data → no new RT events (deduped)");
 }
@@ -283,7 +290,7 @@ console.log("\n8. History PRE_ALERT with no cohort sirens → pre_alert (no fals
         data: "ראשון לציון - מזרח", category: 14 },
     ],
   );
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assertColor(r1, "pre_alert", "history cohort but no sirens → stays pre_alert");
   assert(es.cohortCities.size === 2, "cohortCities reconstructed (2 cohort cities)");
   assert(es.sirenCohortCities.size === 0, "sirenCohortCities empty (no sirens in history)");
@@ -321,7 +328,7 @@ console.log("\n9. Thresholds data with siren timing stats accessible on pre-aler
     { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: [CITY, ...COHORT] },
   ]);
-  var r1 = engine.processState(state1, es, CITY, now);
+  var r1 = healthyPoll(state1, es, CITY, now);
   assertColor(r1, "pre_alert", "PRE_ALERT → pre_alert with thresholds data");
 
   // Verify thresholds data is accessible
@@ -350,17 +357,17 @@ console.log("\n10. siren_window — triggered at P5 threshold");
     { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: [CITY, ...COHORT] },
   ], [], "2026-04-01T09:00:01Z");
-  var r1 = engine.processState(state1, es, CITY, preAlertTime + 10000); // t+10s
+  var r1 = healthyPoll(state1, es, CITY, preAlertTime + 10000); // t+10s
   assertColor(r1, "pre_alert", "t+10s before P5(60s) → pre_alert");
 
   // Poll 2: t+90s → P5 elapsed, no cohort sirens yet → siren_window
-  var r2 = engine.processState(state1, es, CITY, preAlertTime + 90000); // t+90s
+  var r2 = healthyPoll(state1, es, CITY, preAlertTime + 90000); // t+90s
   assertColor(r2, "siren_window", "t+90s after P5(60s), no cohort sirens → siren_window");
 
   // Poll 3: cohort sirens arrive and stable threshold elapses → likely_passed takes priority
   es.sirenCohortCities = new Set(["תל אביב - דרום העיר ויפו"]);
   es.firstCohortSirenMs = preAlertTime + 30000;
-  var r3 = engine.processState(state1, es, CITY, preAlertTime + 30000 + 250000); // 250s after first siren
+  var r3 = healthyPoll(state1, es, CITY, preAlertTime + 30000 + 250000); // 250s after first siren
   assertColor(r3, "likely_passed", "likely_passed takes priority over siren_window when stable elapsed");
 }
 
@@ -382,7 +389,7 @@ console.log("\n11. History backdating — siren_window uses actual pre-alert tim
     { cat: "10", title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: [CITY, ...COHORT] },
   ], [], "2026-04-01T09:01:30Z");
-  var r1 = engine.processState(state1, es, CITY, pollTime);
+  var r1 = healthyPoll(state1, es, CITY, pollTime);
   assertColor(r1, "pre_alert", "first poll: rec.time = pollTime, elapsed=0 < P5 → pre_alert");
   assert(es.currentRecord.time === Math.floor(pollTime / 1000),
     "rec.time is poll time before history arrives");
@@ -398,7 +405,7 @@ console.log("\n11. History backdating — siren_window uses actual pre-alert tim
       title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: CITY },
   ], "2026-04-01T09:02:10Z");
-  var r2 = engine.processState(state2, es, CITY, pollTime + 40000); // 09:02:10
+  var r2 = healthyPoll(state2, es, CITY, pollTime + 40000); // 09:02:10
   assert(es.currentRecord.time === Math.floor(issueTime / 1000),
     "rec.time backdated to actual issue time from history");
   assertColor(r2, "siren_window",
@@ -422,7 +429,7 @@ console.log("\n12. Backdating skips expired history pre-alerts");
       title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: CITY },
   ], "2026-04-01T12:05:00Z");
-  var r1 = engine.processState(state1, es, CITY, pollTime);
+  var r1 = healthyPoll(state1, es, CITY, pollTime);
   assert(es.currentRecord.time === Math.floor(pollTime / 1000),
     "expired history entry ignored — rec.time stays at poll time");
   assertColor(r1, "pre_alert", "no backdating from expired entry → pre_alert");
@@ -445,7 +452,7 @@ console.log("\n13. Backdating rejects unrelated older pre-alert (>10min gap)");
       title: "בדקות הקרובות צפויות להתקבל התרעות באזורך",
       data: CITY },
   ], "2026-04-01T09:20:00Z");
-  var r1 = engine.processState(state1, es, CITY, pollTime);
+  var r1 = healthyPoll(state1, es, CITY, pollTime);
   assert(es.currentRecord.time === Math.floor(pollTime / 1000),
     "older unrelated pre-alert (15min gap) not used for backdating");
   assertColor(r1, "pre_alert", "no backdating from unrelated entry → pre_alert");
@@ -473,14 +480,65 @@ console.log("\n14. Backdating does not drift to older entries across polls");
       data: CITY },
   ], "2026-04-01T09:06:00Z");
 
-  var r1 = engine.processState(state1, es, CITY, pollTime);
+  var r1 = healthyPoll(state1, es, CITY, pollTime);
   assert(es.currentRecord.time === t("09:05:00"),
     "poll 1: backdated to most recent entry (09:05)");
 
   // Poll 2: same data, 5s later — should NOT drift to 09:00
-  var r2 = engine.processState(state1, es, CITY, pollTime + 5000);
+  var r2 = healthyPoll(state1, es, CITY, pollTime + 5000);
   assert(es.currentRecord.time === t("09:05:00"),
     "poll 2: still at 09:05, did not drift to 09:00");
+}
+
+console.log("\nFeed health and recovery");
+{
+  const now = tMs("09:00:00");
+  const ts = new Date(now).toISOString();
+  const good = { ok: true, last_success_at: ts };
+  const bad = { ok: false, last_success_at: null };
+  const state = { alerts: [], history: [], updated_at: ts };
+  const es = engine.createState({ stableThresholdMs: 0 });
+  const poll = (ms = now) => engine.processState(state, es, CITY, ms);
+  assertColor(poll(), "unknown", "updated_at alone cannot verify live");
+  state.feeds = { live: good, history: good };
+  assertColor(poll(), "green", "both reads successful");
+  assertColor(poll(now + 61000), "unknown", "frozen success expires");
+  state.alerts = [{ cat: "10", title: "בדקות", data: [CITY, ...COHORT] },
+                  { cat: "1", data: COHORT }];
+  state.feeds.history = bad;
+  assertColor(poll(), "pre_alert", "history outage blocks amber");
+  state.feeds.history = good;
+  assertColor(poll(), "likely_passed", "history recovery permits amber");
+  state.feeds.history = { ok: true, last_success_at: new Date(now - 61000).toISOString() };
+  const frozenHistory = poll();
+  assertColor(frozenHistory, "pre_alert", "frozen history blocks amber despite fresh live");
+  assert(!!frozenHistory.staleWarning, "stopped history timer raises a warning");
+  state.feeds.history = good;
+  state.feeds.live = bad;
+  assertColor(poll(), "pre_alert", "live outage revokes amber");
+  state.feeds = { live: good, history: bad };
+  state.alerts = [{ cat: "1", data: [CITY] }];
+  assertColor(poll(), "red", "live siren immediately supersedes same-second pre-alert");
+  state.feeds.live = { ok: false, last_success_at: ts };
+  assertColor(poll(now + 61000), "red", "outage retains active red");
+  assertColor(poll(now + 181 * 60000), "unknown", "expiry during outage is not green");
+  assertColor(engine.processState(state, engine.createState(), CITY, now + 181 * 60000),
+    "unknown", "fresh tab does not restart an expired cached siren");
+}
+
+{
+  const now = tMs("09:00:00");
+  const snapshot = (aheadMs) => {
+    const feed = { ok: true, last_success_at: new Date(now + aheadMs).toISOString() };
+    return { alerts: [{ cat: "1", data: [CITY] }], history: [], feeds: { live: feed, history: feed } };
+  };
+  const es = engine.createState();
+  const result = engine.processState(snapshot(10000), es, CITY, now);
+  assertColor(result, "red", "a small browser clock lag does not hide a siren");
+  assert(result.staleWarning === null, "clock lag within tolerance does not flag either feed");
+  assert(es.currentRecord?.time === now / 1000, "live warning starts no later than receipt");
+  assertColor(engine.processState(snapshot(11000), engine.createState(), CITY, now),
+    "unknown", "large future timestamps are unverified");
 }
 
 // ── Summary ──

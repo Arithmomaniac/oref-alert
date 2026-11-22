@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const WEB_DIR = path.resolve(__dirname, "..");
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
 const CITY = "בית שמש";
+test.beforeEach(({ context }) => context.route("https://**", route => route.abort()));
 
 /**
  * Start a local HTTP server that serves index.html and mock API responses.
@@ -49,7 +50,7 @@ function startMockServer(fixtureFile) {
 
     if (url.pathname === "/api/state.json") {
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(stateData);
+      res.end(stateData.replaceAll("$NOW", new Date().toISOString()));
       return;
     }
     if (url.pathname === "/api/thresholds.json") {
@@ -321,8 +322,7 @@ test.describe("Event log rendering", () => {
 // ── 3. Connection warning ──────────────────────────────────────
 
 test.describe("Connection warning", () => {
-  test("shows connection warning after 3+ failed polls", async ({ page }) => {
-    test.setTimeout(60000);
+  test("first failed poll shows unknown and a connection warning", async ({ page }) => {
     const mock = await startMockServerWithErrors();
     try {
       await page.route("**/orefalert-func.azurewebsites.net/**", (route) =>
@@ -331,8 +331,7 @@ test.describe("Connection warning", () => {
 
       await page.goto(`${mock.url}/?city=${encodeURIComponent(CITY)}`);
 
-      // Wait for 3+ poll cycles (5s each) + margin
-      await page.waitForTimeout(20000);
+      await expect(page.locator("#status-text")).toHaveText("מצב ההתרעות לא ידוע");
 
       const connWarning = page.locator("#conn-warning");
       await expect(connWarning).toBeVisible();

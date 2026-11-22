@@ -26,7 +26,7 @@ function assert(condition, msg) {
 
 console.log("\n1. COLOR_MAP completeness");
 {
-  var colors = ["green", "pre_alert", "siren_window", "likely_passed", "red"];
+  var colors = ["unknown", "green", "pre_alert", "siren_window", "likely_passed", "red"];
   colors.forEach(function(c) {
     assert(vm.COLOR_MAP[c] != null, c + " exists in COLOR_MAP");
     assert(typeof vm.COLOR_MAP[c].bg === "string", c + " has bg string");

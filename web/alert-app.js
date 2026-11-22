@@ -35,7 +35,7 @@ var elGithubLink = document.getElementById("github-link");
 // ── State ──────────────────────────────────────────────────
 var city = "";
 var es = engine.createState();
-var failCount = 0;
+var connectionFailed = false;
 var pollTimer = null;
 var sessionExpired = false;
 var lastThresholdFetch = 0;
@@ -193,6 +193,9 @@ function applyColor(color) {
 
 function updateClock() {
   var now = new Date();
+  applyColor(engine.getColor(es.currentRecord, es, now.getTime()));
+  var warning = engine.feedWarning(es, now.getTime());
+  if (warning && !connectionFailed) showWarning(warning);
   var hh = String(now.getHours()).padStart(2, "0");
   var mm = String(now.getMinutes()).padStart(2, "0");
   var ss = String(now.getSeconds()).padStart(2, "0");
@@ -203,7 +206,7 @@ function updateClock() {
 // ── Polling & processing ──────────────────────────────────
 
 function processState(state) {
-  failCount = 0;
+  connectionFailed = false;
   var nowMs = Date.now();
 
   var result = engine.processState(state, es, city, nowMs);
@@ -235,14 +238,15 @@ function onPollData(data) {
     processState(data);
   } catch (e) {
     svc.trackEvent("ProcessingError", { error: String(e) });
+    onPollError();
   }
 }
 
 function onPollError() {
-  failCount++;
-  if (failCount >= 3) {
-    showWarning("\u26A0 \u05D0\u05D9\u05DF \u05D7\u05D9\u05D1\u05D5\u05E8"); // ⚠ אין חיבור
-  }
+  connectionFailed = true;
+  es.feeds = {};
+  applyColor(engine.getColor(es.currentRecord, es, Date.now()));
+  showWarning("⚠ אין חיבור");
 }
 
 var statePoller = svc.createPoller({
@@ -437,9 +441,6 @@ export function init() {
 
   // Fetch thresholds
   loadThresholds();
-
-  // Initial color
-  applyColor("green");
 
   // Clock
   updateClock();

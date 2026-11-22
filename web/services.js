@@ -13,11 +13,19 @@ export function createPoller(opts) {
   // opts: { url, interval, onData, onError, fetchFn }
   var timer = null;
   var fetchFn = opts.fetchFn || fetch;
+  var nextRequest = 0;
+  var lastDelivered = 0;
   function poll() {
-    fetchFn(opts.url)
+    var request = ++nextRequest;
+    function deliver(callback, value) {
+      if (request <= lastDelivered) return;
+      lastDelivered = request;
+      callback(value);
+    }
+    fetchFn(opts.url, { cache: "no-store" })
       .then(function(r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(opts.onData)
-      .catch(opts.onError);
+      .then(function(data) { deliver(opts.onData, data); },
+            function(error) { deliver(opts.onError, error); });
   }
   return {
     start: function() { poll(); timer = setInterval(poll, opts.interval); },

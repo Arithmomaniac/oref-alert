@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const WEB_DIR = path.resolve(__dirname, "..");
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
 const CITY = "בית שמש";
+test.beforeEach(({ context }) => context.route("https://**", route => route.abort()));
 
 function startMockServer() {
   const stateData = fs.readFileSync(path.join(FIXTURES_DIR, "state-green.json"), "utf-8");
@@ -26,7 +27,7 @@ function startMockServer() {
     const url = new URL(req.url, "http://localhost");
     if (url.pathname === "/api/state.json") {
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(stateData);
+      res.end(stateData.replaceAll("$NOW", new Date().toISOString()));
       return;
     }
     if (url.pathname === "/api/thresholds.json") {

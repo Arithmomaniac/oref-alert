@@ -36,6 +36,7 @@ export var PRE_ALERT_EXPIRY_MIN = 180;
 export var DEDUP_WINDOW_SEC = 180;
 export var MAX_EVENTS = 10;
 export var STALE_THRESHOLD_SEC = 60;
+var MAX_CLOCK_SKEW_MS = 10000;
 
 // ── State factory ──────────────────────────────────────────────
 
@@ -49,6 +50,7 @@ export function createState(opts) {
   opts = opts || {};
   return {
     currentRecord: null,
+    feeds: {},
     cohortCities: new Set(),
     sirenCohortCities: new Set(),
     firstCohortSirenMs: null,
@@ -142,11 +144,25 @@ export function shouldUpdate(newRec, curRec) {
  * @param {object} es - Engine state
  * @param {number} nowMs - Current time in ms
  */
+function fresh(feed, nowMs) {
+  if (!feed || feed.ok !== true || typeof feed.last_success_at !== "string") return false;
+  var age = nowMs - Date.parse(feed.last_success_at);
+  return age >= -MAX_CLOCK_SKEW_MS && age <= STALE_THRESHOLD_SEC * 1000;
+}
+
+export function feedWarning(es, nowMs) {
+  if (!fresh(es.feeds.live, nowMs)) return "⚠ נתוני ההתרעות בזמן אמת אינם מאומתים";
+  if (!fresh(es.feeds.history, nowMs)) return "⚠ היסטוריית ההתרעות אינה מאומתת";
+  return null;
+}
+
 export function getColor(rec, es, nowMs) {
-  if (!rec) return "green";
+  if (!rec || rec.type === END || (rec.expiryMs != null && nowMs > rec.expiryMs)) {
+    return fresh(es.feeds.live, nowMs) ? "green" : "unknown";
+  }
   if (rec.type === ALERT) return "red";
   if (rec.type === PRE_ALERT) {
-    if (es.stableThresholdMs !== null &&
+    if (!feedWarning(es, nowMs) && es.stableThresholdMs !== null &&
         es.sirenCohortCities.size > 0 && es.firstCohortSirenMs !== null &&
         (nowMs - es.firstCohortSirenMs) >= es.stableThresholdMs) {
       return "likely_passed";
@@ -157,7 +173,7 @@ export function getColor(rec, es, nowMs) {
     }
     return "pre_alert";
   }
-  return "green";
+  return "unknown";
 }
 
 // ── Expiry check ───────────────────────────────────────────────
@@ -192,15 +208,17 @@ export function processState(state, es, city, nowMs) {
   var events = [];
   var alerts = normalizeAlerts(state.alerts);
 
-  // Check staleness
-  var staleWarning = null;
-  if (state.updated_at) {
-    var updatedMs = new Date(state.updated_at).getTime();
-    var ageSec = (nowMs - updatedMs) / 1000;
-    if (ageSec > STALE_THRESHOLD_SEC) {
-      staleWarning = "\u26A0 \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD \u05DC\u05D0 \u05E2\u05D3\u05DB\u05E0\u05D9\u05D9\u05DD";
-    }
+  es.feeds = state.feeds || {};
+  var liveFresh = fresh(es.feeds.live, nowMs);
+  var historyFresh = fresh(es.feeds.history, nowMs);
+  // Legacy timestamps can date a positive observation, never verify an all-clear.
+  var liveMs = Date.parse(es.feeds.live ? es.feeds.live.last_success_at : state.updated_at);
+  if (!Number.isFinite(liveMs) || liveMs > nowMs + MAX_CLOCK_SKEW_MS) {
+    alerts = [];
+    es.feeds = { history: es.feeds.history };
   }
+  liveMs = Math.min(liveMs, nowMs);
+  var activeLiveSiren = false;
 
   // ── Pass 1: Process real-time alerts ──────────────────────
   var newRtKeys = new Set();
@@ -210,9 +228,6 @@ export function processState(state, es, city, nowMs) {
     var title = a.title || "";
     var data = a.data || [];
     var rtKey = cat + "|" + title + "|" + data.join(",");
-    newRtKeys.add(rtKey);
-
-    if (es.lastRtKeys.has(rtKey)) continue;
 
     var cityMatch = false;
     for (var j = 0; j < data.length; j++) {
@@ -221,11 +236,15 @@ export function processState(state, es, city, nowMs) {
     if (!cityMatch) continue;
 
     var cl = classifyRealtime(cat, title);
-    if (cl.type === null) continue;
+    if (cl.type === null || (cl.type === END && !liveFresh)) continue;
+    newRtKeys.add(rtKey);
+    if (liveFresh && cl.type === ALERT) activeLiveSiren = true;
+    if (es.lastRtKeys.has(rtKey)) continue;
 
-    var timeSec = Math.floor(nowMs / 1000);
+    var timeSec = Math.floor(liveMs / 1000);
     var rec = makeRecord(cl.type, cl.histCat, title, timeSec);
-    var changed = shouldUpdate(rec, es.currentRecord);
+    var changed = shouldUpdate(rec, es.currentRecord) ||
+      (liveFresh && cl.type === ALERT && es.currentRecord.type !== ALERT);
     if (changed) {
       es.currentRecord = rec;
       // Store original poll time for backdating reference (prevents cumulative drift)
@@ -253,7 +272,8 @@ export function processState(state, es, city, nowMs) {
     var evColor = getColor(rec, es, nowMs) === "green" ? "green" : getColor(rec, es, nowMs) === "red" ? "red" : "pre_alert";
     events.push({ dotColor: evColor, title: title, source: "RT", causedChange: changed });
   }
-  es.lastRtKeys = newRtKeys;
+  if (liveFresh) es.lastRtKeys = newRtKeys;
+  else newRtKeys.forEach(function(key) { es.lastRtKeys.add(key); });
 
   // ── Pass 2: check if cohort cities have sirens ────────────
   if (es.cohortCities.size > 0 && es.currentRecord && es.currentRecord.type === PRE_ALERT) {
@@ -268,7 +288,7 @@ export function processState(state, es, city, nowMs) {
         if (es.cohortCities.has(data2[d2]) && !es.sirenCohortCities.has(data2[d2])) {
           es.sirenCohortCities.add(data2[d2]);
           if (es.firstCohortSirenMs === null) {
-            es.firstCohortSirenMs = nowMs;
+            es.firstCohortSirenMs = liveMs;
           }
         }
       }
@@ -293,7 +313,7 @@ export function processState(state, es, city, nowMs) {
 
       var hCat = parseInt(hist.category || hist.cat, 10);
       var hType = classifyHistory(hCat);
-      if (hType === null) continue;
+      if (hType === null || (hType === END && (!historyFresh || activeLiveSiren))) continue;
 
       var hTime = 0;
       if (hist.alertDate) {
@@ -408,7 +428,7 @@ export function processState(state, es, city, nowMs) {
   if (es.eventLog.length > MAX_EVENTS) es.eventLog.length = MAX_EVENTS;
 
   // ── Rebuild recent history on first poll ──────────────────
-  if (es.firstPoll) {
+  if (es.firstPoll && historyFresh) {
     es.firstPoll = false;
     var histEvents = rebuildRecentHistory(state, city, nowMs);
     for (var re = 0; re < histEvents.length; re++) {
@@ -417,7 +437,7 @@ export function processState(state, es, city, nowMs) {
     if (es.eventLog.length > MAX_EVENTS) es.eventLog.length = MAX_EVENTS;
   }
 
-  return { color: color, events: events, staleWarning: staleWarning };
+  return { color: color, events: events, staleWarning: feedWarning(es, nowMs) };
 }
 
 // ── History replay (first-load only) ───────────────────────────
