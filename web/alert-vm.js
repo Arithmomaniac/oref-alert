@@ -4,6 +4,7 @@
  */
 
 export var COLOR_MAP = {
+  unknown:       { bg: "#424242", label: "מצב ההתרעות לא ידוע" },
   green:         { bg: "#00c853", label: "\u05D4\u05DB\u05DC \u05EA\u05E7\u05D9\u05DF" },          // הכל תקין
   pre_alert:     { bg: "#f9a825", label: "\u05D4\u05EA\u05E8\u05D0\u05D4 \u05DE\u05D5\u05E7\u05D3\u05DE\u05EA" }, // התראה מוקדמת
   siren_window:  { bg: "#f57c00", label: "\u05D4\u05EA\u05E8\u05D0\u05D4 \u05DE\u05D5\u05E7\u05D3\u05DE\u05EA" }, // התראה מוקדמת

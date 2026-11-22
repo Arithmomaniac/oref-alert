@@ -122,6 +122,9 @@ green ──[pre-alert received]──→ pre_alert (yellow)
 
 - **Azure Function** (Python, timer trigger) polls oref.org.il from Israel Central every 5 seconds
 - Writes combined alert + history state to **Azure Blob Storage** (`$web/api/state.json`)
+- Live alerts and recent history refresh independently. The five-second live poll reads `Alerts.json`; a separate timer pages through the [Oref history API](https://www.oref.org.il/heb/alerts-history) and saves a complete history snapshot. Live polling never waits for upstream history pages. The historical CSV used for statistics is unchanged.
+- `api/state.json` retains `alerts` and `history`. `feeds.live` and `feeds.history` each contain `ok` (latest attempt succeeded) and `last_success_at` (UTC timestamp, or `null` before success). A valid empty response counts as a success; a failed or partial refresh does not. `updated_at` tracks the last successful live read for older clients, or the Unix epoch if none is known.
+- The display treats unavailable or stale live data as unknown rather than all-clear. During a history outage it still shows live sirens, warns that history is unavailable, and suppresses “probably passed.”
 - **Daily threshold job** streams historical CSV data, computes per-city thresholds + siren timing stats, and writes `thresholds.json`
 - **Geolocation endpoint** (`/api/locate`) resolves lat/lng to a city using polygon containment with nearest-city fallback
 - **Static HTML/JS** served from the same `$web` blob container (no CORS issues)
@@ -132,7 +135,10 @@ green ──[pre-alert received]──→ pre_alert (yellow)
 ```bash
 npm test              # Playwright integration tests (color states, report page, wake lock)
 npm run test:unit     # Node.js unit tests for alert-engine.js
+python -m unittest discover -s tests   # Polling tests; requires function_app/requirements.txt
 ```
+
+With Python and the function dependencies installed, set `TEST_POLLER=1` before running `npm test` to also exercise a snapshot emitted by the Python timers in the browser. The test uses simulated upstream responses and does not contact Azure.
 
 ## Deployment
 

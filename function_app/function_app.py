@@ -2,15 +2,13 @@
 Azure Function: Pikud HaOref Alert Poller
 
 Polls the Israeli Home Front Command (oref.org.il) real-time alert API every
-5 seconds, combines it with recent history feeds, and writes a state.json
+5 seconds, combines it with independently refreshed recent history, and writes a state.json
 snapshot to the $web blob container for static-site consumption.
 
 API quirks handled here:
   - Alerts.json may return a JSON array, a JSON object, or an empty string.
-  - AlertsHistory.json returns a JSON array, but may lag or omit some alert
-    categories; GetAlarmsHistory.aspx is used as a supplemental history feed.
+  - The history API groups paginated rows by date.
   - Responses are encoded with BOM (utf-8-sig) and may contain null bytes.
-  - SSL certificates occasionally fail verification.
 """
 
 import json
@@ -23,35 +21,35 @@ from datetime import datetime, timedelta, timezone
 
 import azure.functions as func
 import httpx
-from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobLeaseClient, BlobServiceClient, ContentSettings
-
 from analysis import (
     analyze_all_cities,
     compute_all_thresholds,
     find_no_warning_sirens,
     load_csv_rows,
 )
+from azure.core.exceptions import AzureError, ResourceNotFoundError
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobLeaseClient, BlobServiceClient, ContentSettings
 
 app = func.FunctionApp()
+logger = logging.getLogger(__name__)
 
 # Shared headers required by oref.org.il to accept the request
 OREF_HEADERS = {
     "Referer": "https://www.oref.org.il/",
     "X-Requested-With": "XMLHttpRequest",
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Content-Type": "application/json",
 }
 
 ALERTS_URL = "https://www.oref.org.il/warningMessages/alert/Alerts.json"
-HISTORY_URL = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json"
-HISTORY2_URL = "https://alerts-history.oref.org.il/Shared/Ajax/GetAlarmsHistory.aspx?lang=he&mode=1"
+HISTORY_URL = "https://www.oref.org.il/api/v1/AlertHistory/heb"
+HISTORY_BLOB = "api/_history.json"
+STATE_BLOB = "api/state.json"
 
 # Last-known-good values so a single failed fetch doesn't wipe the state
 _last_alerts: list = []
-_last_history: list = []
-_last_history2: list = []
-_last_history2_fetch_monotonic = 0.0
-HISTORY2_REFRESH_SECONDS = 20
+_last_live_success: str | None = None
 
 
 def _clean_response_text(raw: bytes) -> str:
@@ -70,156 +68,172 @@ def _parse_alerts(text: str) -> list:
     if not text:
         return []
     parsed = json.loads(text)
-    if isinstance(parsed, list):
-        return parsed
-    if isinstance(parsed, dict):
-        return [parsed]
-    return []
+    return _validate_alerts([parsed] if isinstance(parsed, dict) else parsed)
 
 
-def _parse_history(text: str) -> list:
-    """Parse a history payload (always a JSON array)."""
-    text = text.strip()
-    if not text:
-        return []
-    return json.loads(text)
+def _validate_alerts(parsed) -> list:
+    if not isinstance(parsed, list) or not all(
+        isinstance(row, dict) and str(row.get("cat", "")).isdigit()
+        and isinstance(row.get("data"), list) and all(isinstance(city, str) for city in row["data"])
+        for row in parsed
+    ):
+        raise ValueError("Invalid live alerts payload")
+    return parsed
 
 
-def _normalize_history2_record(record: dict) -> dict:
-    """Convert GetAlarmsHistory.aspx rows to AlertsHistory.json shape."""
-    alert_date = str(record.get("alertDate", "")).replace("T", " ")
-    date_str = str(record.get("date", ""))
-    time_str = str(record.get("time", ""))
-    if date_str and time_str:
-        try:
-            day, month, year = date_str.split(".")
-            alert_date = f"{year}-{month}-{day} {time_str}"
-        except ValueError:
-            pass
-
-    return {
-        "alertDate": alert_date,
-        "title": record.get("category_desc", record.get("title", "")),
-        "data": record.get("data", ""),
-        "category": record.get("category"),
-    }
+def _utc_stamp() -> str:
+    return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
 
 
-def _parse_history2(text: str) -> list:
-    """Parse and normalize alerts-history.oref.org.il history rows."""
-    rows = _parse_history(text)
-    return [_normalize_history2_record(row) for row in rows if isinstance(row, dict)]
+def _fetch_history(client: httpx.Client) -> list:
+    params = {"period": "lastDay", "cities": ""}
+    rows = {}
+    cursors = set()
+    deadline = _time.monotonic() + 20
+    for _ in range(300):
+        if _time.monotonic() >= deadline:
+            break
+        response = client.get(HISTORY_URL, params=params)
+        response.raise_for_status()
+        payload = response.json()
+        groups = payload.get("alarmsGroupedByDate") if isinstance(payload, dict) else None
+        if not isinstance(groups, list):
+            raise TypeError("Expected alarmsGroupedByDate array")
+        last = None
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("value"), list):
+                raise TypeError("Invalid alert history group")
+            for row in group["value"]:
+                if not isinstance(row, dict) or not all(
+                    isinstance(row.get(k), str) and row[k]
+                    for k in ("data", "category_Desc", "date", "time", "dateTime")
+                ) or not str(row.get("category", "")).isascii() or not str(row.get("category", "")).isdigit():
+                    raise ValueError("Invalid alert history record")
+                stamp = datetime.strptime(f"{row['date']} {row['time']}", "%d.%m.%Y %H:%M:%S")
+                date = stamp.isoformat(sep=" ")
+                category = int(row["category"])
+                rows[(date, row["data"], category)] = {
+                    "alertDate": date, "title": row["category_Desc"], "data": row["data"], "category": category,
+                }
+                last = row
+        if last is None:
+            return sorted(rows.values(), key=lambda r: r["alertDate"], reverse=True)
+        cursor = (last["dateTime"], last["category_Desc"], last["data"])
+        if cursor in cursors:
+            raise ValueError("History cursor stopped advancing")
+        cursors.add(cursor)
+        params.update(zip(("lastCreatedOn", "lastTitle", "lastCityName"), cursor))
+    raise ValueError("History refresh exceeded its paging budget")
 
 
-def _merge_history(*histories: list) -> list:
-    """Merge history feeds, dedupe equivalent rows, and keep newest first."""
-    merged = []
-    seen = set()
-    for history in histories:
-        for row in history:
-            if not isinstance(row, dict):
-                continue
-            key = (
-                str(row.get("alertDate") or ""),
-                str(row.get("data") or ""),
-                str(row.get("category") or ""),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(row)
-    merged.sort(key=lambda row: str(row.get("alertDate") or ""), reverse=True)
-    return merged
+def _empty_history() -> dict:
+    return {"history": [], "health": {"ok": False, "last_success_at": None}}
 
 
-def _fetch_oref_data() -> tuple[list, list]:
-    """Fetch both oref endpoints synchronously.
-
-    Returns (alerts, history). On per-endpoint failure the last known good
-    value is returned so the caller always gets usable data.
-    """
-    global _last_alerts, _last_history, _last_history2, _last_history2_fetch_monotonic
-
-    alerts = _last_alerts
-    history = _last_history
-    history2 = _last_history2
-
-    # SSL verification relaxed — oref.org.il occasionally has cert issues
-    with httpx.Client(headers=OREF_HEADERS, verify=False, timeout=10.0) as client:
-        # --- Alerts ---
-        try:
-            resp = client.get(ALERTS_URL)
-            resp.raise_for_status()
-            alerts = _parse_alerts(_clean_response_text(resp.content))
-            _last_alerts = alerts
-        except Exception:
-            logging.warning("Failed to fetch Alerts.json — using last known value", exc_info=True)
-
-        # --- History ---
-        try:
-            resp = client.get(HISTORY_URL)
-            resp.raise_for_status()
-            history = _parse_history(_clean_response_text(resp.content))
-            _last_history = history
-        except Exception:
-            logging.warning("Failed to fetch AlertsHistory.json — using last known value", exc_info=True)
-
-        # --- Alternate history ---
-        if (_time.monotonic() - _last_history2_fetch_monotonic) >= HISTORY2_REFRESH_SECONDS:
-            _last_history2_fetch_monotonic = _time.monotonic()
-            try:
-                resp = client.get(HISTORY2_URL)
-                resp.raise_for_status()
-                history2 = _parse_history2(_clean_response_text(resp.content))
-                _last_history2 = history2
-            except Exception:
-                logging.warning("Failed to fetch GetAlarmsHistory.aspx — using last known value", exc_info=True)
-
-    return alerts, _merge_history(history, history2)
+def _read_history(container) -> dict:
+    snapshot = json.loads(container.get_blob_client(HISTORY_BLOB).download_blob().readall())
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("history"), list):
+        raise TypeError("Invalid cached history")
+    _validate_history_health(snapshot.get("health"))
+    return snapshot
 
 
-def _upload_state(state: dict) -> None:
-    """Write the combined state JSON to $web/api/state.json in blob storage."""
-    account_name = os.environ["STORAGE_ACCOUNT_NAME"]
-    account_url = f"https://{account_name}.blob.core.windows.net"
+def _last_complete_history(container) -> dict:
+    """Keep the published rows during a migration or cache outage, without claiming freshness."""
+    try:
+        return _read_history(container)
+    except ResourceNotFoundError:
+        pass
+    except (AzureError, ValueError, TypeError):
+        logger.warning("Could not read cached history", exc_info=True)
 
-    credential = DefaultAzureCredential()
-    blob_service = BlobServiceClient(account_url=account_url, credential=credential)
+    try:
+        previous = json.loads(container.get_blob_client(STATE_BLOB).download_blob().readall())
+        rows = previous["history"]
+        if not isinstance(rows, list):
+            raise TypeError("Invalid published history")
+        health = previous.get("feeds", {}).get("history", _empty_history()["health"])
+        stamp = _validate_history_health(health)
+        return {"history": rows, "health": {"ok": False, "last_success_at": stamp}}
+    except ResourceNotFoundError:
+        return _empty_history()
+    except (AzureError, ValueError, TypeError, KeyError, AttributeError):
+        logger.warning("Could not recover published history", exc_info=True)
+        return _empty_history()
 
-    container = blob_service.get_container_client("$web")
-    blob = container.get_blob_client("api/state.json")
 
-    content_settings = ContentSettings(
-        content_type="application/json; charset=utf-8",
-        cache_control="max-age=4, must-revalidate",
-    )
+def _validate_history_health(health) -> str | None:
+    if not isinstance(health, dict) or not isinstance(health.get("ok"), bool):
+        raise TypeError("Invalid cached history health")
+    stamp = health.get("last_success_at")
+    if stamp is not None or health["ok"]:
+        if not isinstance(stamp, str):
+            raise ValueError("Missing history success timestamp")
+        datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+    return stamp
 
-    blob.upload_blob(
-        json.dumps(state, ensure_ascii=False),
-        overwrite=True,
-        content_settings=content_settings,
-    )
-    logging.info("Uploaded state.json to $web/api/state.json")
+
+def _restore_live(container) -> tuple[list, str | None]:
+    """Recover evidence on a cold worker; legacy updated_at was only an attempt."""
+    try:
+        previous = json.loads(container.get_blob_client(STATE_BLOB).download_blob().readall())
+        alerts = _validate_alerts(previous["alerts"])
+        stamp = previous.get("feeds", {}).get("live", {}).get("last_success_at")
+        if stamp is not None:
+            datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+        return alerts, stamp
+    except ResourceNotFoundError:
+        return [], None
+    except (ValueError, TypeError, KeyError, AttributeError):
+        logger.warning("Invalid persisted live snapshot", exc_info=True)
+        return [], None
+
+
+@app.timer_trigger(schedule="*/20 * * * * *", arg_name="timer", run_on_startup=False)
+def refresh_history(timer: func.TimerRequest) -> None:
+    container = _get_container_client()
+    try:
+        with httpx.Client(headers=OREF_HEADERS, timeout=8.0) as client:
+            rows = _fetch_history(client)
+        snapshot = {"history": rows, "health": {"ok": True, "last_success_at": _utc_stamp()}}
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        logger.warning("Recent history refresh failed; keeping complete snapshot", exc_info=True)
+        snapshot = _last_complete_history(container)
+        snapshot["health"]["ok"] = False
+    _write_json_blob(container, HISTORY_BLOB, snapshot)
 
 
 @app.timer_trigger(schedule="*/5 * * * * *", arg_name="timer", run_on_startup=False)
 def poll_oref(timer: func.TimerRequest) -> None:
     """Timer-triggered function that polls oref.org.il and writes state.json."""
     if timer.past_due:
-        logging.warning("Timer is past due — executing anyway")
+        logger.warning("Timer is past due — executing anyway")
 
-    alerts, history = _fetch_oref_data()
-
-    state = {
-        "alerts": alerts,
-        "history": history,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-
+    global _last_alerts, _last_live_success
+    live_ok = False
     try:
-        _upload_state(state)
-    except Exception:
-        logging.exception("Failed to upload state.json to blob storage")
+        with httpx.Client(headers=OREF_HEADERS, timeout=4.0) as client:
+            response = client.get(ALERTS_URL)
+            response.raise_for_status()
+            _last_alerts = _parse_alerts(_clean_response_text(response.content))
+        _last_live_success = _utc_stamp()
+        live_ok = True
+    except (httpx.HTTPError, ValueError):
+        logger.warning("Live alert refresh failed; keeping last successful read", exc_info=True)
+
+    container = _get_container_client()
+    if not live_ok and _last_live_success is None:
+        _last_alerts, _last_live_success = _restore_live(container)
+    snapshot = _last_complete_history(container)
+    state = {
+        "alerts": _last_alerts, "history": snapshot["history"],
+        "updated_at": _last_live_success or "1970-01-01T00:00:00Z",
+        "feeds": {
+            "live": {"ok": live_ok, "last_success_at": _last_live_success},
+            "history": snapshot["health"],
+        },
+    }
+    _write_json_blob(container, STATE_BLOB, state, cache_control="max-age=4, must-revalidate")
 
 
 # ---------------------------------------------------------------------------
