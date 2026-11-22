@@ -20,6 +20,30 @@ def page(rows):
 
 
 class PollingTests(unittest.TestCase):
+    def test_denial_diagnostics_sample_each_feed_without_logging_raw_body(self):
+        request_ids = {"live": "edge-live=", "history": "edge-history="}
+        secret = "not-for-logs"
+        content_type = "text/html; charset=utf-8"
+        with patch.object(app, "_last_denial_log", {}), \
+             patch.object(app._time, "monotonic", side_effect=[0, 899, 899, 900]), \
+             self.assertLogs(app.logger, "WARNING") as logs:
+            for feed, status in (("live", 403), ("live", 403), ("history", 403), ("live", 429)):
+                response = httpx.Response(
+                    status,
+                    headers={"x-amz-cf-id": request_ids[feed], "set-cookie": secret, "content-type": content_type},
+                    text=f"<h1>Request blocked</h1>{secret}",
+                )
+                app._log_oref_denial(feed, response)
+        expected = [
+            app._DENIAL_LOG_FORMAT % (feed, status, json.dumps({
+                "headers": {"content-type": content_type, "x-amz-cf-id": request_ids[feed]},
+                "body_hints": ["request blocked"],
+            }))
+            for feed, status in (("live", 403), ("history", 403), ("live", 429))
+        ]
+        messages = [record.getMessage() for record in logs.records]
+        self.assertEqual(messages, expected)
+
     def test_pages_preserve_areas_sharing_id_and_ignore_overlap(self):
         a, b = row("Area A"), row("א & ב")
         pages = iter([page([a]), page([a, b]), page([])])
@@ -66,20 +90,25 @@ class PollingTests(unittest.TestCase):
         blob_data[app.STATE_BLOB] = json.dumps({"alerts": [], "history": legacy_history})
         live = iter([(403, b""), (200, json.dumps(siren).encode()), (200, b"null"),
                      (200, b"\xef\xbb\xbf\r\n"), (200, json.dumps(siren).encode())])
-        history = iter([page([row("A")]), page([]), page([row("B")]), {}, page([])])
+        history = iter([None, page([row("A")]), page([]), page([row("B")]), {}, page([])])
         def respond(request):
             if request.url.path.endswith("Alerts.json"):
                 code, content = next(live)
                 return httpx.Response(code, content=content)
-            return httpx.Response(200, json=next(history))
+            payload = next(history)
+            return httpx.Response(403) if payload is None else httpx.Response(200, json=payload)
         timer = Mock(past_due=False)
         with patch.object(app, "_get_container_client", return_value=container), \
              patch.object(app, "_last_live_success", None), patch.object(app, "_last_alerts", []), \
+             patch.object(app, "_last_denial_log", {}), \
              patch.object(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(respond), **kw)):
             def poll():
                 app.poll_oref(timer)
                 return json.loads(blob_data["api/state.json"])
-            cold = poll()
+            with self.assertLogs(app.logger, "WARNING") as logs:
+                app.refresh_history(timer)
+                cold = poll()
+            self.assertEqual(sum(record.msg == app._DENIAL_LOG_FORMAT for record in logs.records), 2)
             self.assertFalse(cold["feeds"]["live"]["ok"])
             self.assertIsNone(cold["feeds"]["history"]["last_success_at"])
             self.assertFalse(cold["feeds"]["history"]["ok"])

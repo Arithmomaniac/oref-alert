@@ -51,6 +51,33 @@ STATE_BLOB = "api/state.json"
 _last_alerts: list = []
 _last_live_success: str | None = None
 
+_DENIAL_HEADERS = (
+    "server", "via", "content-type", "retry-after", "x-cache",
+    "x-amz-cf-id", "x-amz-cf-pop", "cf-ray", "x-request-id",
+)
+_DENIAL_BODY_HINTS = (
+    "request blocked", "access denied", "not available in your country",
+    "your country or region", "too many requests", "rate limit", "request could not be satisfied",
+)
+_DENIAL_LOG_FORMAT = "Oref upstream denial: feed=%s status=%s metadata=%s"
+_last_denial_log: dict[str, float] = {}
+
+
+def _log_oref_denial(feed: str, response: httpx.Response) -> None:
+    if response.status_code not in (403, 429):
+        return
+    now = _time.monotonic()
+    previous = _last_denial_log.get(feed)
+    if previous is not None and now - previous < 900:
+        return
+    _last_denial_log[feed] = now
+    body = response.content[:8192].lower()
+    metadata = {
+        "headers": {name: response.headers[name][:256] for name in _DENIAL_HEADERS if name in response.headers},
+        "body_hints": [hint for hint in _DENIAL_BODY_HINTS if hint.encode("ascii") in body],
+    }
+    logger.warning(_DENIAL_LOG_FORMAT, feed, response.status_code, json.dumps(metadata))
+
 
 def _clean_response_text(raw: bytes) -> str:
     """Decode a response that may have a UTF-8 BOM and/or embedded null bytes."""
@@ -94,6 +121,7 @@ def _fetch_history(client: httpx.Client) -> list:
         if _time.monotonic() >= deadline:
             break
         response = client.get(HISTORY_URL, params=params)
+        _log_oref_denial("history", response)
         response.raise_for_status()
         payload = response.json()
         groups = payload.get("alarmsGroupedByDate") if isinstance(payload, dict) else None
@@ -214,6 +242,7 @@ def poll_oref(timer: func.TimerRequest) -> None:
     try:
         with httpx.Client(headers=OREF_HEADERS, timeout=4.0) as client:
             response = client.get(ALERTS_URL)
+            _log_oref_denial("live", response)
             response.raise_for_status()
             _last_alerts = _parse_alerts(_clean_response_text(response.content))
         _last_live_success = _utc_stamp()
